@@ -485,8 +485,6 @@ Window {
                         accent: root.accent
 
                         onSetActive: function(index) {
-                            root.settings.active_layout = index;
-                            root.settings.activeLayout = index;
                             root.activeLayout = index;
                             root.emitAction({"action": "setLayout", "layout": index});
                         }
@@ -722,6 +720,14 @@ Window {
             color: root.cardBg
             border.color: active ? row.accent : root.separatorColor
             border.width: active ? 1 : 0
+        }
+
+        MouseArea {
+            id: rowMouse
+            anchors.fill: parent
+            acceptedButtons: Qt.LeftButton
+            cursorShape: Qt.PointingHandCursor
+            onClicked: row.setActive(row.layoutIndex)
         }
 
         Rectangle {
