@@ -158,7 +158,7 @@ impl<T: Tray> StatusNotifierItem<T> {
         if T::HAS_DBUS_MENU {
             Ok(MENU_PATH)
         } else {
-            Ok(ObjectPath::from_static_str_unchecked("/"))
+            Ok(ObjectPath::from_static_str_unchecked("/NO_DBUSMENU"))
         }
     }
 

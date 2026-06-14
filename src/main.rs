@@ -8,14 +8,15 @@ use clap::{Parser, Subcommand};
 use config::{Settings, SnapMode};
 use ksni::TrayMethods;
 use kwin::KwinController;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::Stdio;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command as ProcessCommand;
@@ -188,12 +189,20 @@ async fn run_tray() -> Result<()> {
 
     let _ = startup_sender.send(TrayMessage::StartupSync);
 
-    let mut running_menu: Option<RunningVisualMenu> = None;
+    let mut running_menu = match spawn_visual_menu_host(menu_sender.clone()).await {
+        Ok(menu) => Some(menu),
+        Err(err) => {
+            tracing::warn!("failed to prewarm visual menu: {err:#}");
+            None
+        }
+    };
+    let mut menu_open = false;
+    let mut menu_sequence = 0_u64;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
                 if let Some(mut menu) = running_menu.take() {
-                    close_visual_menu(&mut menu).await;
+                    shutdown_visual_menu_host(&mut menu).await;
                 }
                 handle.shutdown().await;
                 break;
@@ -228,8 +237,12 @@ async fn run_tray() -> Result<()> {
                         y,
                         status,
                     } => {
-                        if let Some(menu) = running_menu.as_mut() {
-                            close_visual_menu(menu).await;
+                        if menu_open {
+                            if let Some(menu) = running_menu.as_ref() {
+                                menu_sequence += 1;
+                                let _ = write_visual_menu_close_command(menu, menu_sequence);
+                            }
+                            menu_open = false;
                             let _ = handle
                                 .update(|tray: &mut FanzyTray| {
                                     tray.status = "FanzyZones menu closed".into();
@@ -242,22 +255,30 @@ async fn run_tray() -> Result<()> {
                         log_placement_debug(format!(
                             "tray {source} x={x} y={y} anchor={anchor:?}"
                         ));
-                        let _ = handle
-                            .update(|tray: &mut FanzyTray| {
-                                tray.status = "Opening FanzyZones menu...".into();
-                            })
-                            .await;
-                        if should_delay_visual_menu_open(source) {
-                            tokio::time::sleep(Duration::from_millis(220)).await;
+                        if running_menu.is_none() {
+                            running_menu = match spawn_visual_menu_host(menu_sender.clone()).await {
+                                Ok(menu) => Some(menu),
+                                Err(err) => {
+                                    let _ = handle
+                                        .update(|tray: &mut FanzyTray| {
+                                            tray.status = format!("Error: {err:#}");
+                                        })
+                                        .await;
+                                    None
+                                }
+                            };
                         }
-                        match spawn_visual_menu(anchor, &status, menu_sender.clone()).await {
-                            Ok(menu) => running_menu = Some(menu),
-                            Err(err) => {
-                                let _ = handle
-                                    .update(|tray: &mut FanzyTray| {
-                                        tray.status = format!("Error: {err:#}");
-                                    })
-                                    .await;
+                        if let Some(menu) = running_menu.as_ref() {
+                            menu_sequence += 1;
+                            match write_visual_menu_show_command(menu, menu_sequence, anchor, &status) {
+                                Ok(()) => menu_open = true,
+                                Err(err) => {
+                                    let _ = handle
+                                        .update(|tray: &mut FanzyTray| {
+                                            tray.status = format!("Error: {err:#}");
+                                        })
+                                        .await;
+                                }
                             }
                         }
                     }
@@ -266,14 +287,13 @@ async fn run_tray() -> Result<()> {
             Some(event) = menu_receiver.recv() => {
                 match event {
                     VisualMenuEvent::Action { token, payload } => {
-                        let Some(mut menu) = running_menu.take() else {
+                        let Some(menu) = running_menu.as_ref() else {
                             continue;
                         };
                         if token != menu.token {
-                            running_menu = Some(menu);
                             continue;
                         }
-                        close_visual_menu(&mut menu).await;
+                        menu_open = false;
                         let menu_status = handle_visual_menu_payload(&payload, &controller).await;
                         let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
                         let _ = handle
@@ -291,6 +311,9 @@ async fn run_tray() -> Result<()> {
                             })
                             .await;
                         if should_quit {
+                            if let Some(mut menu) = running_menu.take() {
+                                shutdown_visual_menu_host(&mut menu).await;
+                            }
                             handle.shutdown().await;
                             break;
                         }
@@ -303,6 +326,19 @@ async fn run_tray() -> Result<()> {
                             log_placement_debug(payload);
                         }
                     }
+                    VisualMenuEvent::Closed { token } => {
+                        let Some(menu) = running_menu.as_ref() else {
+                            continue;
+                        };
+                        if token == menu.token {
+                            menu_open = false;
+                            let _ = handle
+                                .update(|tray: &mut FanzyTray| {
+                                    tray.status = "FanzyZones menu closed".into();
+                                })
+                                .await;
+                        }
+                    }
                     VisualMenuEvent::Finished(finished) => {
                         let Some(menu) = running_menu.take() else {
                             continue;
@@ -311,32 +347,33 @@ async fn run_tray() -> Result<()> {
                             running_menu = Some(menu);
                             continue;
                         }
+                        menu_open = false;
                         menu.action_task.abort();
-
-                        let menu_status = handle_visual_menu_finished(
-                            finished.result,
-                            menu.closing,
-                            &controller,
-                        ).await;
-                        let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
+                        let closing = menu.closing;
+                        if closing {
+                            continue;
+                        }
+                        let status = match finished.result {
+                            Ok(output) if output.status.success() => {
+                                log_visual_menu_debug_output(&output);
+                                "FanzyZones menu host exited".to_string()
+                            }
+                            Ok(output) => {
+                                log_visual_menu_debug_output(&output);
+                                format!(
+                                    "Error: visual menu host exited with {:?}",
+                                    output.status.code()
+                                )
+                            }
+                            Err(err) => {
+                                format!("Error: {err:#}")
+                            }
+                        };
                         let _ = handle
-                            .update(|tray: &mut FanzyTray| match menu_status {
-                                Ok(HandleOutcome::Settings(settings)) => {
-                                    tray.settings = settings;
-                                    tray.status = "FanzyZones menu closed".into();
-                                }
-                                Ok(HandleOutcome::Quit) => {
-                                    tray.status = "Quitting...".into();
-                                }
-                                Err(err) => {
-                                    tray.status = format!("Error: {err:#}");
-                                }
+                            .update(|tray: &mut FanzyTray| {
+                                tray.status = status;
                             })
                             .await;
-                        if should_quit {
-                            handle.shutdown().await;
-                            break;
-                        }
                     }
                 }
             }
@@ -344,10 +381,6 @@ async fn run_tray() -> Result<()> {
     }
 
     Ok(())
-}
-
-fn should_delay_visual_menu_open(source: &str) -> bool {
-    source == "context_menu"
 }
 
 #[derive(Debug)]
@@ -407,6 +440,7 @@ enum VisualMenuAction {
 #[derive(Debug)]
 struct RunningVisualMenu {
     token: String,
+    command_state: Arc<Mutex<String>>,
     pid: Option<u32>,
     closing: bool,
     action_task: JoinHandle<()>,
@@ -422,6 +456,7 @@ struct VisualMenuFinished {
 enum VisualMenuEvent {
     Action { token: String, payload: String },
     DebugPlacement { token: String, payload: String },
+    Closed { token: String },
     Finished(VisualMenuFinished),
 }
 
@@ -433,15 +468,42 @@ struct VisualMenuOutput {
     stderr: String,
 }
 
-async fn spawn_visual_menu(
-    anchor: Option<(i32, i32)>,
-    status: &str,
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VisualMenuCommandFile<'a> {
+    sequence: u64,
+    visible: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    settings: Option<&'a Settings>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    anchor: Option<VisualMenuCommandAnchor>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<&'a str>,
+    debug_placement: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct VisualMenuCommandAnchor {
+    valid: bool,
+    x: i32,
+    y: i32,
+}
+
+async fn spawn_visual_menu_host(
     menu_sender: UnboundedSender<VisualMenuEvent>,
 ) -> Result<RunningVisualMenu> {
-    let settings = load_and_save_settings()?;
     let qml_path = layout_menu_qml_path()?;
-    let settings_json = settings.compact_json()?;
     let token = visual_menu_token()?;
+    let command_state = Arc::new(Mutex::new(visual_menu_command_json(
+        &VisualMenuCommandFile {
+            sequence: 0,
+            visible: false,
+            settings: None,
+            anchor: None,
+            status: None,
+            debug_placement: placement_debug_enabled(),
+        },
+    )?));
     let action_listener = TcpListener::bind(("127.0.0.1", 0))
         .await
         .context("bind visual menu action listener")?;
@@ -451,20 +513,26 @@ async fn spawn_visual_menu(
         token
     );
     log_placement_debug(format!(
-        "spawn visual menu token={token} anchor={anchor:?} qml={}",
+        "spawn visual menu host token={token} qml={}",
         qml_path.display()
     ));
-    let mut command = visual_menu_command(&qml_path, settings_json, anchor, status);
-    command.arg("--fanzyzones-action-url").arg(&action_url);
+    let mut command = visual_menu_host_command(&qml_path, &action_url);
     let child = command
         .spawn()
-        .with_context(|| format!("open visual menu {}", qml_path.display()))?;
+        .with_context(|| format!("open visual menu host {}", qml_path.display()))?;
     let pid = child.id();
     let finished_token = token.clone();
     let action_token = token.clone();
     let action_sender = menu_sender.clone();
+    let action_command_state = command_state.clone();
     let action_task = tokio::spawn(async move {
-        while let Ok(payload) = receive_visual_menu_request(&action_listener).await {
+        loop {
+            let payload =
+                match receive_visual_menu_request(&action_listener, &action_command_state).await {
+                    Ok(Some(payload)) => payload,
+                    Ok(None) => continue,
+                    Err(_) => break,
+                };
             if payload.contains("\"action\":\"debugPlacement\"") {
                 let _ = action_sender.send(VisualMenuEvent::DebugPlacement {
                     token: action_token.clone(),
@@ -473,11 +541,17 @@ async fn spawn_visual_menu(
                 continue;
             }
 
+            if payload.contains("\"event\":\"closed\"") {
+                let _ = action_sender.send(VisualMenuEvent::Closed {
+                    token: action_token.clone(),
+                });
+                continue;
+            }
+
             let _ = action_sender.send(VisualMenuEvent::Action {
-                token: action_token,
+                token: action_token.clone(),
                 payload,
             });
-            break;
         }
     });
     tokio::spawn(async move {
@@ -498,13 +572,69 @@ async fn spawn_visual_menu(
     });
     Ok(RunningVisualMenu {
         token,
+        command_state,
         pid,
         closing: false,
         action_task,
     })
 }
 
-async fn receive_visual_menu_request(listener: &TcpListener) -> Result<String> {
+fn write_visual_menu_show_command(
+    menu: &RunningVisualMenu,
+    sequence: u64,
+    anchor: Option<(i32, i32)>,
+    status: &str,
+) -> Result<()> {
+    let settings = load_and_save_settings()?;
+    let anchor = anchor.map(|(x, y)| VisualMenuCommandAnchor { valid: true, x, y });
+    write_visual_menu_command_state(
+        menu,
+        &VisualMenuCommandFile {
+            sequence,
+            visible: true,
+            settings: Some(&settings),
+            anchor,
+            status: Some(status),
+            debug_placement: placement_debug_enabled(),
+        },
+    )
+}
+
+fn write_visual_menu_close_command(menu: &RunningVisualMenu, sequence: u64) -> Result<()> {
+    write_visual_menu_command_state(
+        menu,
+        &VisualMenuCommandFile {
+            sequence,
+            visible: false,
+            settings: None,
+            anchor: None,
+            status: None,
+            debug_placement: placement_debug_enabled(),
+        },
+    )
+}
+
+fn write_visual_menu_command_state(
+    menu: &RunningVisualMenu,
+    command: &VisualMenuCommandFile<'_>,
+) -> Result<()> {
+    let payload = visual_menu_command_json(command)?;
+    let mut command_state = menu
+        .command_state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("visual menu command state lock poisoned"))?;
+    *command_state = payload;
+    Ok(())
+}
+
+fn visual_menu_command_json(command: &VisualMenuCommandFile<'_>) -> Result<String> {
+    serde_json::to_string(command).context("serialize visual menu command")
+}
+
+async fn receive_visual_menu_request(
+    listener: &TcpListener,
+    command_state: &Arc<Mutex<String>>,
+) -> Result<Option<String>> {
     let (mut stream, _) = listener
         .accept()
         .await
@@ -531,6 +661,33 @@ async fn receive_visual_menu_request(listener: &TcpListener) -> Result<String> {
             header_end = request.windows(4).position(|window| window == b"\r\n\r\n");
             if let Some(end) = header_end {
                 let headers = String::from_utf8_lossy(&request[..end]);
+                let method = headers
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().next())
+                    .unwrap_or_default();
+                if method == "GET" {
+                    let payload = command_state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("visual menu command state lock poisoned"))?
+                        .clone();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: *\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        payload.len(),
+                        payload
+                    );
+                    stream.write_all(response.as_bytes()).await.ok();
+                    return Ok(None);
+                }
+                if method != "POST" {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 405 Method Not Allowed\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .ok();
+                    return Ok(None);
+                }
                 content_length = headers.lines().find_map(|line| {
                     let (name, value) = line.split_once(':')?;
                     name.eq_ignore_ascii_case("content-length")
@@ -551,7 +708,7 @@ async fn receive_visual_menu_request(listener: &TcpListener) -> Result<String> {
                     )
                     .await
                     .ok();
-                return Ok(body);
+                return Ok(Some(body));
             }
         }
     }
@@ -559,7 +716,7 @@ async fn receive_visual_menu_request(listener: &TcpListener) -> Result<String> {
     anyhow::bail!("visual menu action request ended before body")
 }
 
-async fn close_visual_menu(menu: &mut RunningVisualMenu) {
+async fn shutdown_visual_menu_host(menu: &mut RunningVisualMenu) {
     menu.closing = true;
     menu.action_task.abort();
     if let Some(pid) = menu.pid {
@@ -594,18 +751,6 @@ async fn run_visual_menu_blocking(
         controller,
     )
     .await
-}
-
-async fn handle_visual_menu_finished(
-    result: Result<VisualMenuOutput>,
-    was_closed_by_toggle: bool,
-    controller: &KwinController,
-) -> Result<HandleOutcome> {
-    match result {
-        Ok(output) => handle_visual_menu_output(output, was_closed_by_toggle, controller).await,
-        Err(_err) if was_closed_by_toggle => Ok(HandleOutcome::Settings(load_and_save_settings()?)),
-        Err(err) => Err(err),
-    }
 }
 
 async fn handle_visual_menu_output(
@@ -675,14 +820,38 @@ fn visual_menu_command(
         command.arg("--fanzyzones-debug-placement");
     }
 
+    configure_visual_menu_platform(&mut command);
+
+    command
+}
+
+fn visual_menu_host_command(qml_path: &Path, action_url: &str) -> ProcessCommand {
+    let mut command = ProcessCommand::new("qml");
+    command
+        .arg(qml_path)
+        .arg("--")
+        .arg("--fanzyzones-command-url")
+        .arg(action_url)
+        .arg("--fanzyzones-action-url")
+        .arg(action_url)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if placement_debug_enabled() {
+        command.arg("--fanzyzones-debug-placement");
+    }
+
+    configure_visual_menu_platform(&mut command);
+
+    command
+}
+
+fn configure_visual_menu_platform(command: &mut ProcessCommand) {
     if env::var_os("QT_QPA_PLATFORM").is_none()
         && env::var_os("WAYLAND_DISPLAY").is_some()
         && env::var_os("DISPLAY").is_some()
     {
         command.env("QT_QPA_PLATFORM", "xcb");
     }
-
-    command
 }
 
 fn placement_debug_enabled() -> bool {

@@ -8,6 +8,11 @@ Window {
 
     readonly property string actionPrefix: "FANZYZONES_ACTION "
     readonly property int menuMargin: 8
+    property string commandUrl: parseArgument("--fanzyzones-command-url", "")
+    readonly property bool hostMode: commandUrl.length > 0
+    property int commandSequence: -1
+    property bool commandReadInFlight: false
+    property bool menuVisible: !hostMode
     property var settings: parseSettings()
     property var anchor: parseAnchor()
     property var placementAnchor: normalizeAnchor(anchor)
@@ -41,6 +46,8 @@ Window {
     readonly property color hoverTextColor: highlightTextColor
     readonly property color checkedBg: Qt.rgba(highlightBg.r, highlightBg.g, highlightBg.b, darkMode ? 0.22 : 0.12)
     readonly property color dangerColor: "#dc2626"
+    readonly property int menuWindowFlags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    readonly property int idleWindowFlags: menuWindowFlags | Qt.WindowTransparentForInput
     readonly property real availableLeft: Math.min(0, Screen.virtualX)
     readonly property real availableTop: Math.min(0, Screen.virtualY)
     readonly property real availableRight: availableLeft + Screen.desktopAvailableWidth
@@ -52,21 +59,37 @@ Window {
     }
 
     visible: true
+    opacity: hostMode && !menuVisible ? 0 : 1
     width: 346
-    height: Math.min(menuColumn.implicitHeight + 18, Math.max(220, Screen.desktopAvailableHeight - 80))
-    x: contextMenuX()
-    y: contextMenuY()
+    height: Math.min(
+        Math.max(menuColumn.implicitHeight + 18, 220),
+        Math.max(220, Screen.desktopAvailableHeight - 80)
+    )
+    x: hostMode && !menuVisible ? availableLeft : contextMenuX()
+    y: hostMode && !menuVisible ? availableTop : contextMenuY()
     color: "transparent"
     title: "FanzyZones"
-    flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    flags: hostMode && !menuVisible ? idleWindowFlags : menuWindowFlags
 
     onActiveChanged: {
-        if (!closeOnDeactivate || actionEmitted)
+        if (!menuVisible || !closeOnDeactivate || actionEmitted)
             return;
         if (active)
             deactivateCloseTimer.stop();
         else
             deactivateCloseTimer.restart();
+    }
+
+    function invalidAnchor() {
+        return {"valid": false, "x": 0, "y": 0};
+    }
+
+    function parseArgument(flag, fallback) {
+        for (let i = 0; i < Qt.application.arguments.length - 1; i++) {
+            if (Qt.application.arguments[i] === flag)
+                return Qt.application.arguments[i + 1];
+        }
+        return fallback;
     }
 
     function parseSettings() {
@@ -87,23 +110,15 @@ Window {
             if (isFinite(parsedX) && isFinite(parsedY))
                 return {"valid": true, "x": parsedX, "y": parsedY};
         }
-        return {"valid": false, "x": 0, "y": 0};
+        return invalidAnchor();
     }
 
     function parseStatus() {
-        for (let i = 0; i < Qt.application.arguments.length - 1; i++) {
-            if (Qt.application.arguments[i] === "--fanzyzones-status")
-                return Qt.application.arguments[i + 1];
-        }
-        return "KWin integration ready";
+        return parseArgument("--fanzyzones-status", "KWin integration ready");
     }
 
     function parseActionUrl() {
-        for (let i = 0; i < Qt.application.arguments.length - 1; i++) {
-            if (Qt.application.arguments[i] === "--fanzyzones-action-url")
-                return Qt.application.arguments[i + 1];
-        }
-        return "";
+        return parseArgument("--fanzyzones-action-url", "");
     }
 
     function parseFlag(flag) {
@@ -200,7 +215,10 @@ Window {
         const payload = JSON.stringify(action);
         if (!postPayload(payload))
             print(actionPrefix + payload);
-        Qt.quit();
+        if (hostMode)
+            closeMenu(false);
+        else
+            Qt.quit();
     }
 
     function postPayload(payload) {
@@ -263,11 +281,99 @@ Window {
             console.log("FANZYZONES_PLACEMENT " + payload);
     }
 
+    function readCommand() {
+        if (!hostMode)
+            return;
+        if (commandReadInFlight)
+            return;
+
+        try {
+            commandReadInFlight = true;
+            const request = new XMLHttpRequest();
+            request.onreadystatechange = function() {
+                if (request.readyState !== XMLHttpRequest.DONE)
+                    return;
+
+                commandReadInFlight = false;
+                try {
+                    if (request.status !== 0 && request.status !== 200)
+                        return;
+
+                    const command = JSON.parse(request.responseText);
+                    if (command.sequence === undefined || command.sequence === commandSequence)
+                        return;
+
+                    commandSequence = command.sequence;
+                    applyCommand(command);
+                } catch (error) {
+                }
+            };
+            request.open("GET", commandUrl + "?sequence=" + commandSequence + "&t=" + Date.now(), true);
+            request.send();
+        } catch (error) {
+            commandReadInFlight = false;
+        }
+    }
+
+    function applyCommand(command) {
+        if (!command.visible) {
+            closeMenu(false);
+            return;
+        }
+
+        if (command.settings !== undefined)
+            settings = command.settings;
+        anchor = command.anchor !== undefined ? command.anchor : invalidAnchor();
+        placementAnchor = normalizeAnchor(anchor);
+        integrationStatus = command.status !== undefined ? command.status : "KWin integration ready";
+        debugPlacement = !!command.debugPlacement;
+        activeLayout = settings.active_layout || 0;
+        actionEmitted = false;
+        closeOnDeactivate = false;
+        menuVisible = true;
+        raise();
+        requestActivate();
+        placementLogTimer.restart();
+        closeTimer.restart();
+    }
+
+    function closeMenu(emitClosed) {
+        if (!hostMode) {
+            Qt.quit();
+            return;
+        }
+
+        const wasVisible = menuVisible;
+        deactivateCloseTimer.stop();
+        closeTimer.stop();
+        closeOnDeactivate = false;
+        menuVisible = false;
+        if (emitClosed && wasVisible && !actionEmitted) {
+            postPayload(JSON.stringify({
+                "event": "closed",
+                "sequence": commandSequence
+            }));
+        }
+        actionEmitted = false;
+    }
+
     Component.onCompleted: {
+        if (hostMode)
+            return;
+
         root.raise();
         root.requestActivate();
         placementLogTimer.start();
         closeTimer.start();
+    }
+
+    Timer {
+        id: commandPollTimer
+        interval: 16
+        repeat: true
+        running: root.hostMode
+        triggeredOnStart: true
+        onTriggered: readCommand()
     }
 
     Timer {
@@ -290,13 +396,13 @@ Window {
         repeat: false
         onTriggered: {
             if (!root.active && !root.actionEmitted)
-                Qt.quit();
+                root.closeMenu(true);
         }
     }
 
     Shortcut {
         sequences: [StandardKey.Cancel]
-        onActivated: Qt.quit()
+        onActivated: root.closeMenu(true)
     }
 
     Rectangle {
