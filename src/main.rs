@@ -240,7 +240,7 @@ async fn run_tray() -> Result<()> {
                         if menu_open {
                             if let Some(menu) = running_menu.as_ref() {
                                 menu_sequence += 1;
-                                let _ = write_visual_menu_close_command(menu, menu_sequence);
+                                let _ = write_visual_menu_close_command(menu, menu_sequence, None);
                             }
                             menu_open = false;
                             let _ = handle
@@ -296,6 +296,22 @@ async fn run_tray() -> Result<()> {
                         menu_open = false;
                         let menu_status = handle_visual_menu_payload(&payload, &controller).await;
                         let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
+                        if let Some(menu) = running_menu.as_ref() {
+                            menu_sequence += 1;
+                            match &menu_status {
+                                Ok(HandleOutcome::Settings(settings)) => {
+                                    let _ = write_visual_menu_close_command(
+                                        menu,
+                                        menu_sequence,
+                                        Some(settings),
+                                    );
+                                }
+                                _ => {
+                                    let _ =
+                                        write_visual_menu_close_command(menu, menu_sequence, None);
+                                }
+                            }
+                        }
                         let _ = handle
                             .update(|tray: &mut FanzyTray| match menu_status {
                                 Ok(HandleOutcome::Settings(settings)) => {
@@ -600,13 +616,17 @@ fn write_visual_menu_show_command(
     )
 }
 
-fn write_visual_menu_close_command(menu: &RunningVisualMenu, sequence: u64) -> Result<()> {
+fn write_visual_menu_close_command(
+    menu: &RunningVisualMenu,
+    sequence: u64,
+    settings: Option<&Settings>,
+) -> Result<()> {
     write_visual_menu_command_state(
         menu,
         &VisualMenuCommandFile {
             sequence,
             visible: false,
-            settings: None,
+            settings,
             anchor: None,
             status: None,
             debug_placement: placement_debug_enabled(),

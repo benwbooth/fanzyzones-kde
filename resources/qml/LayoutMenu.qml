@@ -19,7 +19,7 @@ Window {
     property string integrationStatus: parseStatus()
     property string actionUrl: parseActionUrl()
     property bool debugPlacement: parseFlag("--fanzyzones-debug-placement")
-    property int activeLayout: settings.active_layout || 0
+    property int activeLayout: activeLayoutFromSettings(settings)
     property bool closeOnDeactivate: false
     property bool actionEmitted: false
     property color accent: Qt.rgba(
@@ -90,6 +90,14 @@ Window {
                 return Qt.application.arguments[i + 1];
         }
         return fallback;
+    }
+
+    function activeLayoutFromSettings(value) {
+        if (value && value.active_layout !== undefined)
+            return value.active_layout;
+        if (value && value.activeLayout !== undefined)
+            return value.activeLayout;
+        return 0;
     }
 
     function parseSettings() {
@@ -316,18 +324,18 @@ Window {
     }
 
     function applyCommand(command) {
+        if (command.settings !== undefined)
+            settings = command.settings;
+        activeLayout = activeLayoutFromSettings(settings);
+        integrationStatus = command.status !== undefined ? command.status : "KWin integration ready";
+        debugPlacement = !!command.debugPlacement;
         if (!command.visible) {
             closeMenu(false);
             return;
         }
 
-        if (command.settings !== undefined)
-            settings = command.settings;
         anchor = command.anchor !== undefined ? command.anchor : invalidAnchor();
         placementAnchor = normalizeAnchor(anchor);
-        integrationStatus = command.status !== undefined ? command.status : "KWin integration ready";
-        debugPlacement = !!command.debugPlacement;
-        activeLayout = settings.active_layout || 0;
         actionEmitted = false;
         closeOnDeactivate = false;
         menuVisible = true;
@@ -477,6 +485,8 @@ Window {
                         accent: root.accent
 
                         onSetActive: function(index) {
+                            root.settings.active_layout = index;
+                            root.settings.activeLayout = index;
                             root.activeLayout = index;
                             root.emitAction({"action": "setLayout", "layout": index});
                         }
