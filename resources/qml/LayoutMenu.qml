@@ -48,6 +48,11 @@ Window {
     readonly property color dangerColor: "#dc2626"
     readonly property int menuWindowFlags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     readonly property int idleWindowFlags: menuWindowFlags | Qt.WindowTransparentForInput
+    readonly property real menuWidth: 346
+    readonly property real menuHeight: Math.min(
+        Math.max(menuColumn.implicitHeight + 18, 220),
+        Math.max(220, Screen.desktopAvailableHeight - 80)
+    )
     readonly property real screenLeft: Screen.virtualX
     readonly property real screenTop: Screen.virtualY
     readonly property real screenWidth: Screen.width
@@ -64,13 +69,10 @@ Window {
 
     visible: true
     opacity: hostMode && !menuVisible ? 0 : 1
-    width: 346
-    height: Math.min(
-        Math.max(menuColumn.implicitHeight + 18, 220),
-        Math.max(220, Screen.desktopAvailableHeight - 80)
-    )
-    x: hostMode && !menuVisible ? availableLeft : contextMenuX()
-    y: hostMode && !menuVisible ? availableTop : contextMenuY()
+    width: hostMode && !menuVisible ? 1 : screenWidth
+    height: hostMode && !menuVisible ? 1 : screenHeight
+    x: hostMode && !menuVisible ? availableLeft : screenLeft
+    y: hostMode && !menuVisible ? availableTop : screenTop
     color: "transparent"
     title: "FanzyZones"
     flags: hostMode && !menuVisible ? idleWindowFlags : menuWindowFlags
@@ -187,25 +189,25 @@ Window {
 
     function contextMenuX() {
         const minX = availableLeft + menuMargin;
-        const maxX = availableRight - width - menuMargin;
+        const maxX = availableRight - menuWidth - menuMargin;
         if (!placementAnchor.valid)
-            return clamp(availableRight - width - menuMargin, minX, maxX);
+            return clamp(availableRight - menuWidth - menuMargin, minX, maxX);
 
         let proposed = placementAnchor.x;
-        if (proposed + width > availableRight - menuMargin)
-            proposed = placementAnchor.x - width;
+        if (proposed + menuWidth > availableRight - menuMargin)
+            proposed = placementAnchor.x - menuWidth;
         return clamp(proposed, minX, maxX);
     }
 
     function contextMenuY() {
         const minY = availableTop + menuMargin;
-        const maxY = availableBottom - height - menuMargin;
+        const maxY = availableBottom - menuHeight - menuMargin;
         if (!placementAnchor.valid)
             return clamp(availableTop + menuMargin, minY, maxY);
 
         let proposed = placementAnchor.y;
-        if (proposed + height > availableBottom - menuMargin)
-            proposed = placementAnchor.y - height;
+        if (proposed + menuHeight > availableBottom - menuMargin)
+            proposed = placementAnchor.y - menuHeight;
         return clamp(proposed, minY, maxY);
     }
 
@@ -261,10 +263,14 @@ Window {
         return {
             "anchor": anchor,
             "placementAnchor": placementAnchor,
-            "x": root.x,
-            "y": root.y,
-            "width": root.width,
-            "height": root.height,
+            "x": contextMenuX(),
+            "y": contextMenuY(),
+            "width": menuWidth,
+            "height": menuHeight,
+            "windowX": root.x,
+            "windowY": root.y,
+            "windowWidth": root.width,
+            "windowHeight": root.height,
             "availableLeft": availableLeft,
             "availableTop": availableTop,
             "availableRight": availableRight,
@@ -343,7 +349,6 @@ Window {
         actionEmitted = false;
         closeOnDeactivate = false;
         menuVisible = true;
-        outsideCatcher.raise();
         raise();
         requestActivate();
         placementLogTimer.restart();
@@ -418,49 +423,20 @@ Window {
         onActivated: root.closeMenu(true)
     }
 
-    Window {
-        id: outsideCatcher
-
-        visible: root.hostMode && root.menuVisible
-        x: root.screenLeft
-        y: root.screenTop
-        width: root.screenWidth
-        height: root.screenHeight
-        color: "transparent"
-        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
-
-        onVisibleChanged: {
-            if (visible)
-                raiseMenuTimer.restart();
-        }
-
-        Rectangle {
-            anchors.fill: parent
-            color: "transparent"
-
-            MouseArea {
-                anchors.fill: parent
-                acceptedButtons: Qt.AllButtons
-                onPressed: root.closeMenu(true)
-                onWheel: root.closeMenu(true)
-            }
-        }
-    }
-
-    Timer {
-        id: raiseMenuTimer
-        interval: 0
-        repeat: false
-        onTriggered: {
-            if (!root.menuVisible)
-                return;
-            root.raise();
-            root.requestActivate();
-        }
+    MouseArea {
+        anchors.fill: parent
+        acceptedButtons: Qt.AllButtons
+        enabled: root.menuVisible
+        onPressed: root.closeMenu(true)
+        onWheel: root.closeMenu(true)
     }
 
     Rectangle {
-        anchors.fill: parent
+        x: root.contextMenuX() - root.x
+        y: root.contextMenuY() - root.y
+        width: root.menuWidth
+        height: root.menuHeight
+        visible: root.menuVisible
         radius: 4
         color: root.menuBg
         border.color: root.borderColor
