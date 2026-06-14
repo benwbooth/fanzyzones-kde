@@ -48,6 +48,10 @@ Window {
     readonly property color dangerColor: "#dc2626"
     readonly property int menuWindowFlags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     readonly property int idleWindowFlags: menuWindowFlags | Qt.WindowTransparentForInput
+    readonly property real screenLeft: Screen.virtualX
+    readonly property real screenTop: Screen.virtualY
+    readonly property real screenWidth: Screen.width
+    readonly property real screenHeight: Screen.height
     readonly property real availableLeft: Math.min(0, Screen.virtualX)
     readonly property real availableTop: Math.min(0, Screen.virtualY)
     readonly property real availableRight: availableLeft + Screen.desktopAvailableWidth
@@ -339,6 +343,7 @@ Window {
         actionEmitted = false;
         closeOnDeactivate = false;
         menuVisible = true;
+        outsideCatcher.raise();
         raise();
         requestActivate();
         placementLogTimer.restart();
@@ -413,6 +418,47 @@ Window {
         onActivated: root.closeMenu(true)
     }
 
+    Window {
+        id: outsideCatcher
+
+        visible: root.hostMode && root.menuVisible
+        x: root.screenLeft
+        y: root.screenTop
+        width: root.screenWidth
+        height: root.screenHeight
+        color: "transparent"
+        flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+
+        onVisibleChanged: {
+            if (visible)
+                raiseMenuTimer.restart();
+        }
+
+        Rectangle {
+            anchors.fill: parent
+            color: "transparent"
+
+            MouseArea {
+                anchors.fill: parent
+                acceptedButtons: Qt.AllButtons
+                onPressed: root.closeMenu(true)
+                onWheel: root.closeMenu(true)
+            }
+        }
+    }
+
+    Timer {
+        id: raiseMenuTimer
+        interval: 0
+        repeat: false
+        onTriggered: {
+            if (!root.menuVisible)
+                return;
+            root.raise();
+            root.requestActivate();
+        }
+    }
+
     Rectangle {
         anchors.fill: parent
         radius: 4
@@ -485,7 +531,6 @@ Window {
                         accent: root.accent
 
                         onSetActive: function(index) {
-                            root.activeLayout = index;
                             root.emitAction({"action": "setLayout", "layout": index});
                         }
 
