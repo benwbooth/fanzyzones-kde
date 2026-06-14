@@ -9,17 +9,19 @@ license = "MIT"
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive"] }
+cxx = "1.0"
+cxx-qt = "0.8.1"
+cxx-qt-lib = { version = "0.8.1", features = ["qt_gui", "qt_qml"] }
 directories = "6.0"
-ksni = "0.3.5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
-tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt", "signal", "sync"] }
+tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 tempfile = "3.23"
 
-[patch.crates-io]
-ksni = { path = "vendor/ksni" }
+[build-dependencies]
+cxx-qt-build = "0.8.1"

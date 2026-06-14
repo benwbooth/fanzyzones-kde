@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import Qt.labs.platform as Platform
 import QtQuick.Window
 
 Window {
@@ -8,11 +9,15 @@ Window {
 
     readonly property string actionPrefix: "FANZYZONES_ACTION "
     readonly property int menuMargin: 8
+    property var backend: null
     property string commandUrl: parseArgument("--fanzyzones-command-url", "")
+    property string trayIconSource: parseArgument("--fanzyzones-tray-icon-source", "")
     readonly property bool hostMode: commandUrl.length > 0
+    readonly property bool backendMode: backend !== null
+    readonly property bool trayMode: hostMode || backendMode
     property int commandSequence: -1
     property bool commandReadInFlight: false
-    property bool menuVisible: !hostMode
+    property bool menuVisible: !trayMode
     property var settings: parseSettings()
     property var anchor: parseAnchor()
     property var placementAnchor: normalizeAnchor(anchor)
@@ -68,14 +73,14 @@ Window {
     }
 
     visible: true
-    opacity: hostMode && !menuVisible ? 0 : 1
-    width: hostMode && !menuVisible ? 1 : screenWidth
-    height: hostMode && !menuVisible ? 1 : screenHeight
-    x: hostMode && !menuVisible ? availableLeft : screenLeft
-    y: hostMode && !menuVisible ? availableTop : screenTop
+    opacity: trayMode && !menuVisible ? 0 : 1
+    width: trayMode && !menuVisible ? 1 : screenWidth
+    height: trayMode && !menuVisible ? 1 : screenHeight
+    x: trayMode && !menuVisible ? availableLeft : screenLeft
+    y: trayMode && !menuVisible ? availableTop : screenTop
     color: "transparent"
     title: "FanzyZones"
-    flags: hostMode && !menuVisible ? idleWindowFlags : menuWindowFlags
+    flags: trayMode && !menuVisible ? idleWindowFlags : menuWindowFlags
 
     onActiveChanged: {
         if (!menuVisible || !closeOnDeactivate || actionEmitted)
@@ -193,6 +198,9 @@ Window {
         if (!placementAnchor.valid)
             return clamp(availableRight - menuWidth - menuMargin, minX, maxX);
 
+        if (placementAnchor.source === "trayGeometry")
+            return clamp(placementAnchor.x, minX, maxX);
+
         let proposed = placementAnchor.x;
         if (proposed + menuWidth > availableRight - menuMargin)
             proposed = placementAnchor.x - menuWidth;
@@ -211,6 +219,61 @@ Window {
         return clamp(proposed, minY, maxY);
     }
 
+    function activeLayoutName() {
+        if (!settings.layouts || activeLayout < 0 || activeLayout >= settings.layouts.length)
+            return "Unknown";
+        return settings.layouts[activeLayout].name;
+    }
+
+    function trayToolTip() {
+        return "Active layout: " + activeLayoutName() + "\n" + integrationStatus;
+    }
+
+    function trayAnchor() {
+        const geometry = trayIcon.geometry;
+        if (!geometry
+            || !isFinite(geometry.x)
+            || !isFinite(geometry.y)
+            || geometry.width <= 0
+            || geometry.height <= 0) {
+            return invalidAnchor();
+        }
+
+        const midpointY = geometry.y + geometry.height / 2;
+        const screenMidpointY = availableTop + (availableBottom - availableTop) / 2;
+        const anchorY = midpointY < screenMidpointY
+            ? geometry.y + geometry.height
+            : geometry.y;
+        return {
+            "valid": true,
+            "x": geometry.x,
+            "y": anchorY,
+            "width": geometry.width,
+            "height": geometry.height,
+            "source": "trayGeometry"
+        };
+    }
+
+    function showMenuFromTray() {
+        applyBackendState();
+        anchor = trayAnchor();
+        placementAnchor = normalizeAnchor(anchor);
+        actionEmitted = false;
+        closeOnDeactivate = false;
+        menuVisible = true;
+        raise();
+        requestActivate();
+        placementLogTimer.restart();
+        closeTimer.restart();
+    }
+
+    function toggleTrayMenu() {
+        if (menuVisible)
+            closeMenu(true);
+        else
+            showMenuFromTray();
+    }
+
     function orderedLayoutIndexes() {
         const count = settings.layouts ? settings.layouts.length : 0;
         const indexes = [];
@@ -224,7 +287,7 @@ Window {
     }
 
     function emitAction(action, closeAfter) {
-        const shouldClose = closeAfter !== false || !hostMode;
+        const shouldClose = closeAfter !== false || !trayMode;
         if (shouldClose) {
             actionEmitted = true;
             deactivateCloseTimer.stop();
@@ -232,12 +295,20 @@ Window {
             action.closeMenu = false;
         }
         const payload = JSON.stringify(action);
-        const posted = postPayload(payload);
-        if (!posted)
+        let posted = false;
+        if (backendMode)
+            posted = backend.invoke_action(payload);
+        else
+            posted = postPayload(payload);
+        if (!posted && !backendMode)
             print(actionPrefix + payload);
+        if (posted && backendMode)
+            applyBackendState();
         if (!shouldClose)
             return posted;
-        if (hostMode)
+        if (backendMode && action.action === "quit")
+            Qt.quit();
+        else if (trayMode)
             closeMenu(false);
         else
             Qt.quit();
@@ -272,6 +343,7 @@ Window {
         return {
             "anchor": anchor,
             "placementAnchor": placementAnchor,
+            "trayGeometry": trayIcon.geometry,
             "x": contextMenuX(),
             "y": contextMenuY(),
             "width": menuWidth,
@@ -304,7 +376,9 @@ Window {
             "action": "debugPlacement",
             "placement": placementDetails()
         });
-        if (!postPayload(payload))
+        if (backendMode)
+            backend.invoke_action(payload);
+        else if (!postPayload(payload))
             console.log("FANZYZONES_PLACEMENT " + payload);
     }
 
@@ -368,7 +442,7 @@ Window {
     }
 
     function closeMenu(emitClosed) {
-        if (!hostMode) {
+        if (!trayMode) {
             Qt.quit();
             return;
         }
@@ -378,7 +452,7 @@ Window {
         closeTimer.stop();
         closeOnDeactivate = false;
         menuVisible = false;
-        if (emitClosed && wasVisible && !actionEmitted) {
+        if (hostMode && emitClosed && wasVisible && !actionEmitted) {
             postPayload(JSON.stringify({
                 "event": "closed",
                 "sequence": commandSequence
@@ -387,8 +461,26 @@ Window {
         actionEmitted = false;
     }
 
+    function applyBackendState() {
+        if (!backendMode)
+            return;
+
+        try {
+            if (backend.settings_json !== undefined && backend.settings_json.length > 0) {
+                settings = JSON.parse(backend.settings_json);
+                activeLayout = activeLayoutFromSettings(settings);
+            }
+        } catch (error) {
+        }
+        if (backend.status !== undefined && backend.status.length > 0)
+            integrationStatus = backend.status;
+        if (backend.tray_icon_source !== undefined && backend.tray_icon_source.length > 0)
+            trayIconSource = backend.tray_icon_source;
+    }
+
     Component.onCompleted: {
-        if (hostMode)
+        applyBackendState();
+        if (trayMode)
             return;
 
         root.raise();
@@ -433,6 +525,40 @@ Window {
     Shortcut {
         sequences: [StandardKey.Cancel]
         onActivated: root.closeMenu(true)
+    }
+
+    Platform.SystemTrayIcon {
+        id: trayIcon
+
+        visible: root.trayMode
+        tooltip: root.trayToolTip()
+        icon.name: "fanzyzones-kde"
+        icon.mask: true
+        icon.source: root.trayIconSource
+        onActivated: function(reason) {
+            if (reason === Platform.SystemTrayIcon.Trigger
+                || reason === Platform.SystemTrayIcon.Context
+                || reason === Platform.SystemTrayIcon.MiddleClick) {
+                root.toggleTrayMenu();
+            }
+        }
+    }
+
+    Connections {
+        target: root.backend
+        ignoreUnknownSignals: true
+
+        function onSettings_jsonChanged() {
+            root.applyBackendState();
+        }
+
+        function onStatusChanged() {
+            root.applyBackendState();
+        }
+
+        function onTray_icon_sourceChanged() {
+            root.applyBackendState();
+        }
     }
 
     MouseArea {
