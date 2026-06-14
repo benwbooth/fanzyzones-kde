@@ -10,8 +10,10 @@ Window {
     readonly property int menuMargin: 8
     property var settings: parseSettings()
     property var anchor: parseAnchor()
+    property var placementAnchor: normalizeAnchor(anchor)
     property string integrationStatus: parseStatus()
     property string actionUrl: parseActionUrl()
+    property bool debugPlacement: parseFlag("--fanzyzones-debug-placement")
     property int activeLayout: settings.active_layout || 0
     property bool closeOnDeactivate: false
     property bool actionEmitted: false
@@ -101,31 +103,79 @@ Window {
         return "";
     }
 
+    function parseFlag(flag) {
+        for (let i = 0; i < Qt.application.arguments.length; i++) {
+            if (Qt.application.arguments[i] === flag)
+                return true;
+        }
+        return false;
+    }
+
     function clamp(value, minimum, maximum) {
         return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    function screenScale() {
+        const dpr = Number(Screen.devicePixelRatio);
+        if (isFinite(dpr) && dpr > 1)
+            return dpr;
+        return 1;
+    }
+
+    function normalizeAnchor(rawAnchor) {
+        const scale = screenScale();
+        if (!rawAnchor.valid || scale <= 1)
+            return {
+                "valid": rawAnchor.valid,
+                "x": rawAnchor.x,
+                "y": rawAnchor.y,
+                "scale": scale,
+                "normalized": false
+            };
+
+        const outsideLogicalScreen = rawAnchor.x > availableRight + menuMargin
+            || rawAnchor.y > availableBottom + menuMargin
+            || rawAnchor.x < availableLeft - menuMargin
+            || rawAnchor.y < availableTop - menuMargin;
+        if (!outsideLogicalScreen)
+            return {
+                "valid": true,
+                "x": rawAnchor.x,
+                "y": rawAnchor.y,
+                "scale": scale,
+                "normalized": false
+            };
+
+        return {
+            "valid": true,
+            "x": rawAnchor.x / scale,
+            "y": rawAnchor.y / scale,
+            "scale": scale,
+            "normalized": true
+        };
     }
 
     function contextMenuX() {
         const minX = availableLeft + menuMargin;
         const maxX = availableRight - width - menuMargin;
-        if (!anchor.valid)
+        if (!placementAnchor.valid)
             return clamp(availableRight - width - menuMargin, minX, maxX);
 
-        let proposed = anchor.x;
+        let proposed = placementAnchor.x;
         if (proposed + width > availableRight - menuMargin)
-            proposed = anchor.x - width;
+            proposed = placementAnchor.x - width;
         return clamp(proposed, minX, maxX);
     }
 
     function contextMenuY() {
         const minY = availableTop + menuMargin;
         const maxY = availableBottom - height - menuMargin;
-        if (!anchor.valid)
+        if (!placementAnchor.valid)
             return clamp(availableTop + menuMargin, minY, maxY);
 
-        let proposed = anchor.y;
+        let proposed = placementAnchor.y;
         if (proposed + height > availableBottom - menuMargin)
-            proposed = anchor.y - height;
+            proposed = placementAnchor.y - height;
         return clamp(proposed, minY, maxY);
     }
 
@@ -145,19 +195,24 @@ Window {
         actionEmitted = true;
         deactivateCloseTimer.stop();
         const payload = JSON.stringify(action);
-        if (actionUrl.length > 0) {
-            try {
-                const request = new XMLHttpRequest();
-                request.open("POST", actionUrl, false);
-                request.setRequestHeader("Content-Type", "text/plain");
-                request.send(payload);
-            } catch (error) {
-                print(actionPrefix + payload);
-            }
-        } else {
+        if (!postPayload(payload))
             print(actionPrefix + payload);
-        }
         Qt.quit();
+    }
+
+    function postPayload(payload) {
+        if (actionUrl.length === 0)
+            return false;
+
+        try {
+            const request = new XMLHttpRequest();
+            request.open("POST", actionUrl, false);
+            request.setRequestHeader("Content-Type", "text/plain");
+            request.send(payload);
+            return true;
+        } catch (error) {
+            return false;
+        }
     }
 
     function zoneRect(zone, area) {
@@ -169,10 +224,54 @@ Window {
         );
     }
 
+    function placementDetails() {
+        return {
+            "anchor": anchor,
+            "placementAnchor": placementAnchor,
+            "x": root.x,
+            "y": root.y,
+            "width": root.width,
+            "height": root.height,
+            "availableLeft": availableLeft,
+            "availableTop": availableTop,
+            "availableRight": availableRight,
+            "availableBottom": availableBottom,
+            "screen": {
+                "width": Screen.width,
+                "height": Screen.height,
+                "desktopAvailableWidth": Screen.desktopAvailableWidth,
+                "desktopAvailableHeight": Screen.desktopAvailableHeight,
+                "devicePixelRatio": Screen.devicePixelRatio,
+                "virtualX": Screen.virtualX,
+                "virtualY": Screen.virtualY
+            }
+        };
+    }
+
+    function logPlacement() {
+        if (!debugPlacement)
+            return;
+
+        const payload = JSON.stringify({
+            "action": "debugPlacement",
+            "placement": placementDetails()
+        });
+        if (!postPayload(payload))
+            console.log("FANZYZONES_PLACEMENT " + payload);
+    }
+
     Component.onCompleted: {
         root.raise();
         root.requestActivate();
+        placementLogTimer.start();
         closeTimer.start();
+    }
+
+    Timer {
+        id: placementLogTimer
+        interval: 75
+        repeat: false
+        onTriggered: logPlacement()
     }
 
     Timer {

@@ -12,7 +12,12 @@ pub struct FanzyTray {
 #[derive(Debug, Clone)]
 pub enum TrayMessage {
     StartupSync,
-    OpenVisualMenu { x: i32, y: i32, status: String },
+    OpenVisualMenu {
+        source: &'static str,
+        x: i32,
+        y: i32,
+        status: String,
+    },
 }
 
 impl ksni::Tray for FanzyTray {
@@ -36,6 +41,7 @@ impl ksni::Tray for FanzyTray {
 
     fn activate(&mut self, _x: i32, _y: i32) {
         let _ = self.sender.send(TrayMessage::OpenVisualMenu {
+            source: "activate",
             x: _x,
             y: _y,
             status: self.status.clone(),
@@ -44,6 +50,7 @@ impl ksni::Tray for FanzyTray {
 
     fn context_menu(&mut self, x: i32, y: i32) {
         let _ = self.sender.send(TrayMessage::OpenVisualMenu {
+            source: "context_menu",
             x,
             y,
             status: self.status.clone(),

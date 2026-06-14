@@ -11,6 +11,7 @@ use kwin::KwinController;
 use serde::Deserialize;
 use std::env;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::Stdio;
@@ -19,6 +20,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command as ProcessCommand;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::task::JoinHandle;
 use tray::{FanzyTray, TrayMessage};
 
 #[derive(Debug, Parser)]
@@ -220,7 +222,12 @@ async fn run_tray() -> Result<()> {
                             })
                             .await;
                     }
-                    TrayMessage::OpenVisualMenu { x, y, status } => {
+                    TrayMessage::OpenVisualMenu {
+                        source,
+                        x,
+                        y,
+                        status,
+                    } => {
                         if let Some(menu) = running_menu.as_mut() {
                             close_visual_menu(menu).await;
                             let _ = handle
@@ -232,6 +239,9 @@ async fn run_tray() -> Result<()> {
                         }
 
                         let anchor = (x >= 0 && y >= 0).then_some((x, y));
+                        log_placement_debug(format!(
+                            "tray {source} x={x} y={y} anchor={anchor:?}"
+                        ));
                         let _ = handle
                             .update(|tray: &mut FanzyTray| {
                                 tray.status = "Opening FanzyZones menu...".into();
@@ -282,6 +292,14 @@ async fn run_tray() -> Result<()> {
                             break;
                         }
                     }
+                    VisualMenuEvent::DebugPlacement { token, payload } => {
+                        let Some(menu) = running_menu.as_ref() else {
+                            continue;
+                        };
+                        if token == menu.token {
+                            log_placement_debug(payload);
+                        }
+                    }
                     VisualMenuEvent::Finished(finished) => {
                         let Some(menu) = running_menu.take() else {
                             continue;
@@ -290,6 +308,7 @@ async fn run_tray() -> Result<()> {
                             running_menu = Some(menu);
                             continue;
                         }
+                        menu.action_task.abort();
 
                         let menu_status = handle_visual_menu_finished(
                             finished.result,
@@ -383,6 +402,7 @@ struct RunningVisualMenu {
     token: String,
     pid: Option<u32>,
     closing: bool,
+    action_task: JoinHandle<()>,
 }
 
 #[derive(Debug)]
@@ -394,6 +414,7 @@ struct VisualMenuFinished {
 #[derive(Debug)]
 enum VisualMenuEvent {
     Action { token: String, payload: String },
+    DebugPlacement { token: String, payload: String },
     Finished(VisualMenuFinished),
 }
 
@@ -422,6 +443,10 @@ async fn spawn_visual_menu(
         action_listener.local_addr()?.port(),
         token
     );
+    log_placement_debug(format!(
+        "spawn visual menu token={token} anchor={anchor:?} qml={}",
+        qml_path.display()
+    ));
     let mut command = visual_menu_command(&qml_path, settings_json, anchor, status);
     command.arg("--fanzyzones-action-url").arg(&action_url);
     let child = command
@@ -431,12 +456,21 @@ async fn spawn_visual_menu(
     let finished_token = token.clone();
     let action_token = token.clone();
     let action_sender = menu_sender.clone();
-    tokio::spawn(async move {
-        if let Ok(payload) = receive_visual_menu_action(action_listener).await {
+    let action_task = tokio::spawn(async move {
+        while let Ok(payload) = receive_visual_menu_request(&action_listener).await {
+            if payload.contains("\"action\":\"debugPlacement\"") {
+                let _ = action_sender.send(VisualMenuEvent::DebugPlacement {
+                    token: action_token.clone(),
+                    payload,
+                });
+                continue;
+            }
+
             let _ = action_sender.send(VisualMenuEvent::Action {
                 token: action_token,
                 payload,
             });
+            break;
         }
     });
     tokio::spawn(async move {
@@ -459,10 +493,11 @@ async fn spawn_visual_menu(
         token,
         pid,
         closing: false,
+        action_task,
     })
 }
 
-async fn receive_visual_menu_action(listener: TcpListener) -> Result<String> {
+async fn receive_visual_menu_request(listener: &TcpListener) -> Result<String> {
     let (mut stream, _) = listener
         .accept()
         .await
@@ -519,6 +554,7 @@ async fn receive_visual_menu_action(listener: TcpListener) -> Result<String> {
 
 async fn close_visual_menu(menu: &mut RunningVisualMenu) {
     menu.closing = true;
+    menu.action_task.abort();
     if let Some(pid) = menu.pid {
         let _ = ProcessCommand::new("kill")
             .arg(pid.to_string())
@@ -570,6 +606,7 @@ async fn handle_visual_menu_output(
     was_closed_by_toggle: bool,
     controller: &KwinController,
 ) -> Result<HandleOutcome> {
+    log_visual_menu_debug_output(&output);
     if !output.status.success() {
         if was_closed_by_toggle {
             return Ok(HandleOutcome::Settings(load_and_save_settings()?));
@@ -627,6 +664,9 @@ fn visual_menu_command(
         }))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if placement_debug_enabled() {
+        command.arg("--fanzyzones-debug-placement");
+    }
 
     if env::var_os("QT_QPA_PLATFORM").is_none()
         && env::var_os("WAYLAND_DISPLAY").is_some()
@@ -636,6 +676,40 @@ fn visual_menu_command(
     }
 
     command
+}
+
+fn placement_debug_enabled() -> bool {
+    env::var_os("FANZYZONES_KDE_DEBUG_PLACEMENT").is_some()
+}
+
+fn log_visual_menu_debug_output(output: &VisualMenuOutput) {
+    if !placement_debug_enabled() {
+        return;
+    }
+
+    for line in output.stdout.lines().chain(output.stderr.lines()) {
+        if line.contains("FANZYZONES_PLACEMENT") {
+            log_placement_debug(line);
+        }
+    }
+}
+
+fn log_placement_debug(message: impl AsRef<str>) {
+    if !placement_debug_enabled() {
+        return;
+    }
+
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/fanzyzones-kde.log")
+    {
+        let _ = writeln!(file, "[{millis}] {}", message.as_ref());
+    }
 }
 
 fn visual_menu_token() -> Result<String> {
