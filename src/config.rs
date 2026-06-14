@@ -104,7 +104,7 @@ fn default_true() -> bool {
 }
 
 fn default_gap() -> i32 {
-    8
+    0
 }
 
 fn default_outer_padding() -> i32 {
@@ -259,6 +259,7 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.layouts.len(), 7);
         assert_eq!(settings.active_layout_name(), "Two Panes");
+        assert_eq!(settings.gap, 0);
         assert!(settings.dynamic_workspaces);
         assert!(settings.macsimize_fullscreen);
     }

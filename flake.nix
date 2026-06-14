@@ -26,6 +26,8 @@
           kdePackages.kpackage
           kdePackages.kconfig
           kdePackages.kwindowsystem
+          systemd
+          qt6.qtdeclarative
           qt6.qttools
           xdg-utils
         ];
@@ -54,12 +56,14 @@
           postInstall = ''
             mkdir -p $out/share/fanzyzones-kde
             cp -R kwin-script $out/share/fanzyzones-kde/kwin-script
+            cp -R resources/qml $out/share/fanzyzones-kde/qml
             mkdir -p $out/share/icons
             cp -R resources/icons/hicolor $out/share/icons/
             wrapProgram $out/bin/fanzyzones-kde \
               --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps} \
               --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script" \
-              --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons"
+              --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons" \
+              --set FANZYZONES_KDE_LAYOUT_MENU_QML "$out/share/fanzyzones-kde/qml/LayoutMenu.qml"
           '';
 
           meta = with pkgs.lib; {
@@ -85,6 +89,7 @@
             echo "Run 'cargo test' or 'cargo run -- install --reload'"
             export FANZYZONES_KDE_KWIN_SCRIPT_DIR="$PWD/kwin-script"
             export FANZYZONES_KDE_ICON_THEME_DIR="$PWD/resources/icons"
+            export FANZYZONES_KDE_LAYOUT_MENU_QML="$PWD/resources/qml/LayoutMenu.qml"
           '';
         };
       });

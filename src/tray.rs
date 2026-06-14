@@ -13,6 +13,7 @@ pub struct FanzyTray {
 #[derive(Debug, Clone)]
 pub enum TrayMessage {
     StartupSync,
+    OpenVisualMenu,
     Sync,
     ReloadKwin,
     OpenSettings,
@@ -25,7 +26,7 @@ pub enum TrayMessage {
 }
 
 impl ksni::Tray for FanzyTray {
-    const MENU_ON_ACTIVATE: bool = true;
+    const MENU_ON_ACTIVATE: bool = false;
 
     fn id(&self) -> String {
         "fanzyzones-kde".into()
@@ -43,6 +44,10 @@ impl ksni::Tray for FanzyTray {
         "fanzyzones-kde".into()
     }
 
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.sender.send(TrayMessage::OpenVisualMenu);
+    }
+
     fn tool_tip(&self) -> ksni::ToolTip {
         ksni::ToolTip {
             title: "FanzyZones KDE".into(),
@@ -58,13 +63,25 @@ impl ksni::Tray for FanzyTray {
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
         use ksni::menu::MenuItem;
 
-        let mut items: Vec<MenuItem<Self>> = vec![StandardItem {
-            label: format!("Active: {}", self.settings.active_layout_name()),
-            enabled: false,
-            icon_name: "view-grid".into(),
-            ..Default::default()
-        }
-        .into()];
+        let mut items: Vec<MenuItem<Self>> = vec![
+            StandardItem {
+                label: "Open FanzyZones Menu".into(),
+                icon_name: "fanzyzones-kde".into(),
+                activate: Box::new(|this: &mut Self| {
+                    let _ = this.sender.send(TrayMessage::OpenVisualMenu);
+                }),
+                ..Default::default()
+            }
+            .into(),
+            MenuItem::Separator,
+            StandardItem {
+                label: format!("Active: {}", self.settings.active_layout_name()),
+                enabled: false,
+                icon_name: "view-grid".into(),
+                ..Default::default()
+            }
+            .into(),
+        ];
 
         items.push(
             SubMenu {

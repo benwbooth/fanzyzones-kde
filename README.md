@@ -21,7 +21,9 @@ Plasma 6 KWin package, shared JSON settings, and tests for layout/config logic.
   - Quarters
   - Priority (Left Focus)
   - Grid 3x3
-- Tray icon with layout selection and focused-window zone actions.
+- Tray icon with an original-style visual layout menu: click a layout name to
+  activate it, or click a pane in its mini diagram to move the focused window
+  there.
 - First-run tray setup that idempotently installs or upgrades the bundled KWin
   script, writes settings, enables it, and asks KWin to reconfigure.
 - Focused-window snapping to zone 1 through 9.
@@ -30,7 +32,8 @@ Plasma 6 KWin package, shared JSON settings, and tests for layout/config logic.
 - Modifier-gated drag snapping or auto-snap mode.
 - Configurable gap, outer padding, overlay color, opacity, and zone numbers.
 - Per-screen and per-desktop active layout tracking.
-- Custom layouts through imported or edited JSON settings.
+- Custom layouts through imported or edited JSON settings, with visual-menu
+  create/edit/delete hooks for user layouts.
 - Keyboard shortcuts matching the macOS behavior concept:
   - `Ctrl+Alt+Left` / `Ctrl+Alt+Right` cycle zones.
   - `Ctrl+Alt+Num+1` through `Ctrl+Alt+Num+9` snap to a zone.
@@ -63,12 +66,14 @@ The dev shell provides Rust plus KDE/Qt command-line tools such as
 
 ```sh
 fanzyzones-kde tray
+fanzyzones-kde visual-menu
 fanzyzones-kde install --reload
 fanzyzones-kde write-config
 fanzyzones-kde reload-kwin
 fanzyzones-kde print-config
 fanzyzones-kde config-path
 fanzyzones-kde set-layout builtin.priority-left --sync
+fanzyzones-kde snap-zone 1
 fanzyzones-kde import-config ./settings.json --sync
 fanzyzones-kde disable
 ```
@@ -76,6 +81,9 @@ fanzyzones-kde disable
 Running `fanzyzones-kde tray` is enough for normal use; the tray app performs
 the same setup work as `fanzyzones-kde install --reload` on startup and reports
 setup errors in the tray menu.
+
+Left-clicking the tray icon opens the visual FanzyZones menu. Right-clicking
+opens the plain tray command menu.
 
 ## Layout JSON
 
