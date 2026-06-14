@@ -192,13 +192,62 @@ Item {
         return client.resourceClass.toString().toLowerCase();
     }
 
+    function windowCaption(client) {
+        if (!client || !client.caption)
+            return "";
+        return client.caption.toString().toLowerCase();
+    }
+
+    function isFanzyZonesWindow(client) {
+        const caption = root.windowCaption(client);
+        return caption === "fanzyzones" || caption.indexOf("fanzyzones ") === 0;
+    }
+
     function isSkippedWindow(client) {
         if (!client)
+            return true;
+        if (root.isFanzyZonesWindow(client))
             return true;
         if (!client.normalWindow || client.skipTaskbar || client.popupWindow || client.desktopWindow || client.dock)
             return true;
         const klass = windowClass(client);
         return !klass || settings.skipped_window_classes.indexOf(klass) !== -1;
+    }
+
+    function windowsInStackingOrder() {
+        if (Workspace.stackingOrder)
+            return Workspace.stackingOrder;
+        if (Workspace.windowList)
+            return Workspace.windowList();
+        return [];
+    }
+
+    function isCandidateWindow(client) {
+        if (root.isSkippedWindow(client))
+            return false;
+        if (client.minimized || client.hidden || client.hiddenByShowDesktop)
+            return false;
+        if (client.onAllDesktops)
+            return true;
+        if (!client.desktops || client.desktops.length === 0)
+            return true;
+        return client.desktops.indexOf(Workspace.currentDesktop) !== -1;
+    }
+
+    function targetWindow() {
+        const active = Workspace.activeWindow;
+        if (root.isCandidateWindow(active))
+            return active;
+
+        const all = root.windowsInStackingOrder();
+        for (let i = all.length - 1; i >= 0; i--) {
+            const client = all[i];
+            if (client === active)
+                continue;
+            if (root.isCandidateWindow(client))
+                return client;
+        }
+        return null;
     }
 
     function refreshArea(client) {
@@ -292,7 +341,7 @@ Item {
     }
 
     function snapActiveWindowToZone(index) {
-        root.moveClientToZone(Workspace.activeWindow, index);
+        root.moveClientToZone(root.targetWindow(), index);
     }
 
     function moveClientToZone(client, index) {
@@ -348,7 +397,7 @@ Item {
     }
 
     function cycleActiveWindow(delta) {
-        const client = Workspace.activeWindow;
+        const client = root.targetWindow();
         if (root.isSkippedWindow(client))
             return;
         const layout = root.activeLayout();
@@ -391,7 +440,7 @@ Item {
         } else if (action.action === "setLayout") {
             root.setActiveLayout(action.layout || 0);
         } else if (action.action === "snap") {
-            root.moveClientToLayoutZone(Workspace.activeWindow, action.layout || 0, action.zone || 0);
+            root.moveClientToLayoutZone(root.targetWindow(), action.layout || 0, action.zone || 0);
         }
 
         root.clearPendingAction();
@@ -870,7 +919,7 @@ Item {
         name: "FanzyZones: Snap active window"
         text: "FanzyZones: Snap active window"
         sequence: settings.keyboard_shortcuts_enabled ? "Meta+Shift+Space" : ""
-        onActivated: root.snapClientToClosestZone(Workspace.activeWindow)
+        onActivated: root.snapClientToClosestZone(root.targetWindow())
     }
 
     ShortcutHandler {
