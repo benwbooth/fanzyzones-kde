@@ -9,14 +9,14 @@ use config::{Settings, SnapMode};
 use ksni::TrayMethods;
 use kwin::KwinController;
 use serde::Deserialize;
-use std::collections::VecDeque;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command as ProcessCommand;
-use tokio::sync::mpsc::error::TryRecvError;
+use tokio::sync::mpsc::UnboundedSender;
 use tray::{FanzyTray, TrayMessage};
 
 #[derive(Debug, Parser)]
@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
         CliCommand::Tray => run_tray().await,
         CliCommand::VisualMenu => {
             let controller = KwinController::from_environment()?;
-            run_visual_menu(&controller, None, "KWin integration ready")
+            run_visual_menu_blocking(&controller, None, "KWin integration ready")
                 .await
                 .map(|_| ())
         }
@@ -165,6 +165,7 @@ async fn run_tray() -> Result<()> {
     let settings = load_and_save_settings()?;
     let controller = KwinController::from_environment()?;
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let (menu_sender, mut menu_receiver) = tokio::sync::mpsc::unbounded_channel();
     let startup_sender = sender.clone();
     let tray = FanzyTray {
         settings,
@@ -183,50 +184,104 @@ async fn run_tray() -> Result<()> {
 
     let _ = startup_sender.send(TrayMessage::StartupSync);
 
-    let mut deferred_messages = VecDeque::new();
+    let mut running_menu: Option<RunningVisualMenu> = None;
     loop {
-        let message = if let Some(message) = deferred_messages.pop_front() {
-            message
-        } else {
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                if let Some(mut menu) = running_menu.take() {
+                    close_visual_menu(&mut menu).await;
+                }
+                handle.shutdown().await;
+                break;
+            }
+            Some(message) = receiver.recv() => {
+                match message {
+                    TrayMessage::StartupSync => {
+                        let _ = handle
+                            .update(|tray: &mut FanzyTray| {
+                                tray.status = pending_status(&message).into();
+                            })
+                            .await;
+                        let status = handle_message(message, &controller).await;
+                        let _ = handle
+                            .update(|tray: &mut FanzyTray| match status {
+                                Ok(HandleOutcome::Settings(settings)) => {
+                                    tray.settings = settings;
+                                    tray.status = success_status(&TrayMessage::StartupSync).into();
+                                }
+                                Ok(HandleOutcome::Quit) => {
+                                    tray.status = "Quitting...".into();
+                                }
+                                Err(err) => {
+                                    tray.status = format!("Error: {err:#}");
+                                }
+                            })
+                            .await;
+                    }
+                    TrayMessage::OpenVisualMenu { x, y, status } => {
+                        if let Some(menu) = running_menu.as_mut() {
+                            close_visual_menu(menu).await;
+                            let _ = handle
+                                .update(|tray: &mut FanzyTray| {
+                                    tray.status = "FanzyZones menu closed".into();
+                                })
+                                .await;
+                            continue;
+                        }
+
+                        let anchor = (x >= 0 && y >= 0).then_some((x, y));
+                        let _ = handle
+                            .update(|tray: &mut FanzyTray| {
+                                tray.status = "Opening FanzyZones menu...".into();
+                            })
+                            .await;
+                        match spawn_visual_menu(anchor, &status, menu_sender.clone()).await {
+                            Ok(menu) => running_menu = Some(menu),
+                            Err(err) => {
+                                let _ = handle
+                                    .update(|tray: &mut FanzyTray| {
+                                        tray.status = format!("Error: {err:#}");
+                                    })
+                                    .await;
+                            }
+                        }
+                    }
+                }
+            }
+            Some(finished) = menu_receiver.recv() => {
+                let Some(menu) = running_menu.take() else {
+                    continue;
+                };
+                if finished.token != menu.token {
+                    running_menu = Some(menu);
+                    continue;
+                }
+
+                let menu_status = handle_visual_menu_finished(
+                    finished.result,
+                    menu.closing,
+                    &controller,
+                ).await;
+                let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
+                let _ = handle
+                    .update(|tray: &mut FanzyTray| match menu_status {
+                        Ok(HandleOutcome::Settings(settings)) => {
+                            tray.settings = settings;
+                            tray.status = "FanzyZones menu closed".into();
+                        }
+                        Ok(HandleOutcome::Quit) => {
+                            tray.status = "Quitting...".into();
+                        }
+                        Err(err) => {
+                            tray.status = format!("Error: {err:#}");
+                        }
+                    })
+                    .await;
+                if should_quit {
                     handle.shutdown().await;
                     break;
                 }
-                Some(message) = receiver.recv() => message,
             }
-        };
-
-        let opened_visual_menu = matches!(message, TrayMessage::OpenVisualMenu { .. });
-        let pending_status = pending_status(&message);
-        let success_status = success_status(&message);
-        let _ = handle
-            .update(|tray: &mut FanzyTray| {
-                tray.status = pending_status.into();
-            })
-            .await;
-        let status = handle_message(message, &controller).await;
-        let should_quit = matches!(status, Ok(HandleOutcome::Quit));
-        let _ = handle
-            .update(|tray: &mut FanzyTray| match status {
-                Ok(HandleOutcome::Settings(settings)) => {
-                    tray.settings = settings;
-                    tray.status = success_status.into();
-                }
-                Ok(HandleOutcome::Quit) => {
-                    tray.status = success_status.into();
-                }
-                Err(err) => {
-                    tray.status = format!("Error: {err:#}");
-                }
-            })
-            .await;
-        if opened_visual_menu {
-            drain_stale_visual_menu_toggles(&mut receiver, &mut deferred_messages);
-        }
-        if should_quit {
-            handle.shutdown().await;
-            break;
         }
     }
 
@@ -249,23 +304,7 @@ async fn handle_message(
             controller.sync(&settings, true).await?;
             Ok(HandleOutcome::Settings(settings))
         }
-        TrayMessage::OpenVisualMenu { x, y, status } => {
-            let anchor = (x >= 0 && y >= 0).then_some((x, y));
-            run_visual_menu(controller, anchor, &status).await
-        }
-    }
-}
-
-fn drain_stale_visual_menu_toggles(
-    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<TrayMessage>,
-    deferred_messages: &mut VecDeque<TrayMessage>,
-) {
-    loop {
-        match receiver.try_recv() {
-            Ok(TrayMessage::OpenVisualMenu { .. }) => {}
-            Ok(message) => deferred_messages.push_back(message),
-            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
-        }
+        TrayMessage::OpenVisualMenu { .. } => unreachable!("visual menu is handled in run_tray"),
     }
 }
 
@@ -303,7 +342,76 @@ enum VisualMenuAction {
     Quit,
 }
 
-async fn run_visual_menu(
+#[derive(Debug)]
+struct RunningVisualMenu {
+    token: String,
+    pid: Option<u32>,
+    closing: bool,
+}
+
+#[derive(Debug)]
+struct VisualMenuFinished {
+    token: String,
+    result: Result<VisualMenuOutput>,
+}
+
+#[derive(Debug)]
+struct VisualMenuOutput {
+    qml_path: PathBuf,
+    status: ExitStatus,
+    stdout: String,
+    stderr: String,
+}
+
+async fn spawn_visual_menu(
+    anchor: Option<(i32, i32)>,
+    status: &str,
+    menu_sender: UnboundedSender<VisualMenuFinished>,
+) -> Result<RunningVisualMenu> {
+    let settings = load_and_save_settings()?;
+    let qml_path = layout_menu_qml_path()?;
+    let settings_json = settings.compact_json()?;
+    let token = visual_menu_token()?;
+    let mut command = visual_menu_command(&qml_path, settings_json, anchor, status);
+    let child = command
+        .spawn()
+        .with_context(|| format!("open visual menu {}", qml_path.display()))?;
+    let pid = child.id();
+    let finished_token = token.clone();
+    tokio::spawn(async move {
+        let result = child
+            .wait_with_output()
+            .await
+            .map(|output| VisualMenuOutput {
+                qml_path,
+                status: output.status,
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+            })
+            .map_err(anyhow::Error::from);
+        let _ = menu_sender.send(VisualMenuFinished {
+            token: finished_token,
+            result,
+        });
+    });
+    Ok(RunningVisualMenu {
+        token,
+        pid,
+        closing: false,
+    })
+}
+
+async fn close_visual_menu(menu: &mut RunningVisualMenu) {
+    menu.closing = true;
+    if let Some(pid) = menu.pid {
+        let _ = ProcessCommand::new("kill")
+            .arg(pid.to_string())
+            .status()
+            .await;
+    }
+}
+
+async fn run_visual_menu_blocking(
     controller: &KwinController,
     anchor: Option<(i32, i32)>,
     status: &str,
@@ -311,8 +419,72 @@ async fn run_visual_menu(
     let settings = load_and_save_settings()?;
     let qml_path = layout_menu_qml_path()?;
     let settings_json = settings.compact_json()?;
-    let output = ProcessCommand::new("qml")
-        .arg(&qml_path)
+    let output = visual_menu_command(&qml_path, settings_json, anchor, status)
+        .output()
+        .await
+        .with_context(|| format!("open visual menu {}", qml_path.display()))?;
+
+    handle_visual_menu_output(
+        VisualMenuOutput {
+            qml_path,
+            status: output.status,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        },
+        false,
+        controller,
+    )
+    .await
+}
+
+async fn handle_visual_menu_finished(
+    result: Result<VisualMenuOutput>,
+    was_closed_by_toggle: bool,
+    controller: &KwinController,
+) -> Result<HandleOutcome> {
+    match result {
+        Ok(output) => handle_visual_menu_output(output, was_closed_by_toggle, controller).await,
+        Err(_err) if was_closed_by_toggle => Ok(HandleOutcome::Settings(load_and_save_settings()?)),
+        Err(err) => Err(err),
+    }
+}
+
+async fn handle_visual_menu_output(
+    output: VisualMenuOutput,
+    was_closed_by_toggle: bool,
+    controller: &KwinController,
+) -> Result<HandleOutcome> {
+    if !output.status.success() {
+        if was_closed_by_toggle {
+            return Ok(HandleOutcome::Settings(load_and_save_settings()?));
+        }
+        anyhow::bail!(
+            "visual menu {} exited with {:?}\nstdout:\n{}\nstderr:\n{}",
+            output.qml_path.display(),
+            output.status.code(),
+            output.stdout,
+            output.stderr
+        );
+    }
+
+    let mut settings = load_and_save_settings()?;
+    if let Some(action) = parse_visual_menu_action(&output.stdout, &output.stderr)? {
+        if handle_visual_menu_action(action, controller, &mut settings).await? {
+            return Ok(HandleOutcome::Quit);
+        }
+    }
+    Ok(HandleOutcome::Settings(settings))
+}
+
+fn visual_menu_command(
+    qml_path: &Path,
+    settings_json: String,
+    anchor: Option<(i32, i32)>,
+    status: &str,
+) -> ProcessCommand {
+    let mut command = ProcessCommand::new("qml");
+    command
+        .arg(qml_path)
         .arg("--")
         .arg(settings_json)
         .arg("--fanzyzones-status")
@@ -325,29 +497,24 @@ async fn run_visual_menu(
             ]
         }))
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .with_context(|| format!("open visual menu {}", qml_path.display()))?;
+        .stderr(Stdio::piped());
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if !output.status.success() {
-        anyhow::bail!(
-            "visual menu exited with {:?}\nstdout:\n{}\nstderr:\n{}",
-            output.status.code(),
-            stdout,
-            stderr
-        );
+    if env::var_os("QT_QPA_PLATFORM").is_none()
+        && env::var_os("WAYLAND_DISPLAY").is_some()
+        && env::var_os("DISPLAY").is_some()
+    {
+        command.env("QT_QPA_PLATFORM", "xcb");
     }
 
-    let mut settings = load_and_save_settings()?;
-    if let Some(action) = parse_visual_menu_action(&stdout, &stderr)? {
-        if handle_visual_menu_action(action, controller, &mut settings).await? {
-            return Ok(HandleOutcome::Quit);
-        }
-    }
-    Ok(HandleOutcome::Settings(settings))
+    command
+}
+
+fn visual_menu_token() -> Result<String> {
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("read system time")?
+        .as_millis();
+    Ok(format!("menu-{millis}"))
 }
 
 async fn handle_visual_menu_action(
