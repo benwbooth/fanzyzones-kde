@@ -51,6 +51,13 @@ pub trait Tray: Sized + Send + 'static {
     /// Default is `false`
     const MENU_ON_ACTIVATE: bool = false;
 
+    /// Whether this item exposes a native DBusMenu tree.
+    ///
+    /// Items with custom context UI can set this to `false` while still
+    /// handling [`Self::context_menu`] with the screen coordinates supplied by
+    /// the status notifier host.
+    const HAS_DBUS_MENU: bool = true;
+
     /// It's a name that should be unique for this application and consistent
     /// between sessions, such as the application name itself.
     ///

@@ -21,7 +21,7 @@ pub enum TrayMessage {
 }
 
 impl ksni::Tray for FanzyTray {
-    const MENU_ON_ACTIVATE: bool = true;
+    const HAS_DBUS_MENU: bool = false;
 
     fn id(&self) -> String {
         "fanzyzones-kde".into()
