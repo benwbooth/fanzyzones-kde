@@ -57,6 +57,7 @@
             dbus
             qt6.qtbase
             qt6.qtdeclarative
+            qt6.qtwayland
           ];
 
           QT_DECLARATIVE_LIBEXEC = "${pkgs.qt6.qtdeclarative}/libexec";
@@ -72,7 +73,6 @@
               --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script" \
               --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons" \
               --set FANZYZONES_KDE_TRAY_ICON_SOURCE "$out/share/icons/hicolor/scalable/status/fanzyzones-kde.svg" \
-              --set FANZYZONES_KDE_TRAY_HOST_QML "$out/share/fanzyzones-kde/qml/TrayHost.qml" \
               --set FANZYZONES_KDE_LAYOUT_MENU_QML "$out/share/fanzyzones-kde/qml/LayoutMenu.qml"
           '';
 
@@ -101,7 +101,6 @@
             export FANZYZONES_KDE_KWIN_SCRIPT_DIR="$PWD/kwin-script"
             export FANZYZONES_KDE_ICON_THEME_DIR="$PWD/resources/icons"
             export FANZYZONES_KDE_TRAY_ICON_SOURCE="$PWD/resources/icons/hicolor/scalable/status/fanzyzones-kde.svg"
-            export FANZYZONES_KDE_TRAY_HOST_QML="$PWD/resources/qml/TrayHost.qml"
             export FANZYZONES_KDE_LAYOUT_MENU_QML="$PWD/resources/qml/LayoutMenu.qml"
           '';
         };

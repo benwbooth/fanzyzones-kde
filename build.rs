@@ -14,7 +14,9 @@ fn main() {
     CxxQtBuilder::new_qml_module(QmlModule::new("FanzyZones"))
         .qt_module("Network")
         .qt_module("Quick")
-        .files(["src/backend.rs"])
+        .qt_module("Widgets")
+        .files(["src/backend.rs", "src/qt_app.rs"])
+        .cpp_file("src/qt_app.cpp")
         .build();
 }
 

@@ -532,7 +532,6 @@ Window {
 
         visible: root.trayMode
         tooltip: root.trayToolTip()
-        icon.name: "fanzyzones-kde"
         icon.mask: true
         icon.source: root.trayIconSource
         onActivated: function(reason) {

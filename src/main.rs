@@ -2,11 +2,12 @@ mod backend;
 mod config;
 mod kwin;
 mod layout;
+mod qt_app;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use config::{Settings, SnapMode};
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QString, QUrl};
+use cxx_qt_lib::{QQmlApplicationEngine, QString, QUrl};
 pub(crate) use kwin::KwinController;
 use serde::Deserialize;
 use std::env;
@@ -182,18 +183,23 @@ fn run_tray() -> Result<()> {
     configure_qt_platform_environment();
     cxx_qt::init_crate!(fanzyzones_kde);
 
-    let mut app = QGuiApplication::new();
-    app.pin_mut()
-        .set_application_name(&QString::from("FanzyZones KDE"));
-    app.pin_mut()
-        .set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
-    QGuiApplication::set_desktop_file_name(&QString::from("fanzyzones-kde"));
+    let mut app = qt_app::QApplication::new();
+    app.set_application_name(&QString::from("FanzyZones KDE"));
+    app.set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
+    qt_app::QApplication::set_desktop_file_name(&QString::from("fanzyzones-kde"));
 
+    let mut backend = qt_app::Backend::new();
     let mut engine = QQmlApplicationEngine::new();
-    let qml_path = tray_host_qml_path()?;
+    qt_app::set_engine_backend(engine.pin_mut(), &mut backend);
+    let qml_path = layout_menu_qml_path()?;
     let qml_url = QUrl::from_local_file(&QString::from(qml_path.to_string_lossy().into_owned()));
     engine.pin_mut().load(&qml_url);
-    let code = app.pin_mut().exec();
+    anyhow::ensure!(
+        qt_app::engine_root_count(engine.pin_mut()) > 0,
+        "Qt failed to load {}",
+        qml_path.display()
+    );
+    let code = app.exec();
     anyhow::ensure!(code == 0, "Qt tray app exited with {code}");
     Ok(())
 }
@@ -608,25 +614,6 @@ fn layout_menu_qml_path() -> Result<PathBuf> {
         .flatten()
         .find(|path| path.exists())
         .with_context(|| "locate FanzyZones visual menu QML")
-}
-
-fn tray_host_qml_path() -> Result<PathBuf> {
-    let candidates = [
-        env::var_os("FANZYZONES_KDE_TRAY_HOST_QML").map(PathBuf::from),
-        env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(Path::to_path_buf))
-            .map(|bin| bin.join("../share/fanzyzones-kde/qml/TrayHost.qml")),
-        env::current_dir()
-            .ok()
-            .map(|dir| dir.join("resources/qml/TrayHost.qml")),
-    ];
-
-    candidates
-        .into_iter()
-        .flatten()
-        .find(|path| path.exists())
-        .with_context(|| "locate FanzyZones tray host QML")
 }
 
 pub(crate) fn tray_icon_source_url() -> String {
