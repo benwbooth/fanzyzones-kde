@@ -13,7 +13,7 @@ pub struct FanzyTray {
 #[derive(Debug, Clone)]
 pub enum TrayMessage {
     StartupSync,
-    OpenVisualMenu,
+    OpenVisualMenu { x: i32, y: i32 },
     Sync,
     ReloadKwin,
     OpenSettings,
@@ -45,7 +45,9 @@ impl ksni::Tray for FanzyTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self.sender.send(TrayMessage::OpenVisualMenu);
+        let _ = self
+            .sender
+            .send(TrayMessage::OpenVisualMenu { x: _x, y: _y });
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -68,7 +70,9 @@ impl ksni::Tray for FanzyTray {
                 label: "Open FanzyZones Menu".into(),
                 icon_name: "fanzyzones-kde".into(),
                 activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::OpenVisualMenu);
+                    let _ = this
+                        .sender
+                        .send(TrayMessage::OpenVisualMenu { x: -1, y: -1 });
                 }),
                 ..Default::default()
             }

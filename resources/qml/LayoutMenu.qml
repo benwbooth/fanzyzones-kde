@@ -8,6 +8,7 @@ Window {
 
     readonly property string actionPrefix: "FANZYZONES_ACTION "
     property var settings: parseSettings()
+    property var anchor: parseAnchor()
     property int activeLayout: settings.active_layout || 0
     property color accent: Qt.rgba(
         settings.highlight_color ? settings.highlight_color.red : 0.18,
@@ -19,11 +20,15 @@ Window {
     visible: true
     width: 346
     height: Math.min(menuColumn.implicitHeight + 18, Screen.desktopAvailableHeight - 80)
-    x: Math.max(12, Screen.desktopAvailableWidth - width - 18)
-    y: 42
+    x: anchor.valid
+        ? clamp(anchor.x - width + 24, 8, Screen.desktopAvailableWidth - width - 8)
+        : Math.max(12, Screen.desktopAvailableWidth - width - 18)
+    y: anchor.valid
+        ? clamp(anchor.y + 8, 8, Screen.desktopAvailableHeight - height - 8)
+        : 42
     color: "transparent"
     title: "FanzyZones"
-    flags: Qt.Popup | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+    flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
 
     function parseSettings() {
         for (let i = 0; i < Qt.application.arguments.length; i++) {
@@ -32,6 +37,22 @@ Window {
                 return JSON.parse(arg);
         }
         return {"active_layout": 0, "layouts": []};
+    }
+
+    function parseAnchor() {
+        for (let i = 0; i < Qt.application.arguments.length - 2; i++) {
+            if (Qt.application.arguments[i] !== "--fanzyzones-anchor")
+                continue;
+            const parsedX = Number(Qt.application.arguments[i + 1]);
+            const parsedY = Number(Qt.application.arguments[i + 2]);
+            if (Number.isFinite(parsedX) && Number.isFinite(parsedY))
+                return {"valid": true, "x": parsedX, "y": parsedY};
+        }
+        return {"valid": false, "x": 0, "y": 0};
+    }
+
+    function clamp(value, minimum, maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
     }
 
     function orderedLayoutIndexes() {
@@ -60,8 +81,13 @@ Window {
         );
     }
 
+    Component.onCompleted: {
+        root.raise();
+        root.requestActivate();
+    }
+
     Shortcut {
-        sequence: StandardKey.Cancel
+        sequences: [StandardKey.Cancel]
         onActivated: Qt.quit()
     }
 

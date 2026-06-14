@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
         CliCommand::Tray => run_tray().await,
         CliCommand::VisualMenu => {
             let controller = KwinController::from_environment()?;
-            run_visual_menu(&controller).await.map(|_| ())
+            run_visual_menu(&controller, None).await.map(|_| ())
         }
         CliCommand::Install { reload } => {
             let settings = load_and_save_settings()?;
@@ -226,8 +226,9 @@ async fn handle_message(
             controller.sync(&settings, true).await?;
             Ok(Some(settings))
         }
-        TrayMessage::OpenVisualMenu => {
-            let settings = run_visual_menu(controller).await?;
+        TrayMessage::OpenVisualMenu { x, y } => {
+            let anchor = (x >= 0 && y >= 0).then_some((x, y));
+            let settings = run_visual_menu(controller, anchor).await?;
             Ok(Some(settings))
         }
         TrayMessage::Sync => {
@@ -288,7 +289,7 @@ async fn handle_message(
 fn pending_status(message: &TrayMessage) -> &'static str {
     match message {
         TrayMessage::StartupSync => "Setting up KWin integration...",
-        TrayMessage::OpenVisualMenu => "Opening FanzyZones menu...",
+        TrayMessage::OpenVisualMenu { .. } => "Opening FanzyZones menu...",
         TrayMessage::Sync => "Installing KWin script...",
         TrayMessage::ReloadKwin => "Reloading KWin...",
         TrayMessage::OpenSettings => "Opening settings...",
@@ -304,7 +305,7 @@ fn pending_status(message: &TrayMessage) -> &'static str {
 fn success_status(message: &TrayMessage) -> &'static str {
     match message {
         TrayMessage::StartupSync => "KWin integration ready",
-        TrayMessage::OpenVisualMenu => "FanzyZones menu closed",
+        TrayMessage::OpenVisualMenu { .. } => "FanzyZones menu closed",
         TrayMessage::Sync => "KWin script installed and enabled",
         TrayMessage::ReloadKwin => "KWin reloaded",
         TrayMessage::OpenSettings => "Settings opened",
@@ -329,7 +330,10 @@ enum VisualMenuAction {
     OpenSettings,
 }
 
-async fn run_visual_menu(controller: &KwinController) -> Result<Settings> {
+async fn run_visual_menu(
+    controller: &KwinController,
+    anchor: Option<(i32, i32)>,
+) -> Result<Settings> {
     let settings = load_and_save_settings()?;
     let qml_path = layout_menu_qml_path()?;
     let settings_json = settings.compact_json()?;
@@ -337,6 +341,13 @@ async fn run_visual_menu(controller: &KwinController) -> Result<Settings> {
         .arg(&qml_path)
         .arg("--")
         .arg(settings_json)
+        .args(anchor.into_iter().flat_map(|(x, y)| {
+            [
+                "--fanzyzones-anchor".to_string(),
+                x.to_string(),
+                y.to_string(),
+            ]
+        }))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
