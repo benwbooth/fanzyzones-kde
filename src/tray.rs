@@ -6,11 +6,13 @@ use tokio::sync::mpsc::UnboundedSender;
 pub struct FanzyTray {
     pub settings: Settings,
     pub status: String,
+    pub icon_theme_path: String,
     pub sender: UnboundedSender<TrayMessage>,
 }
 
 #[derive(Debug, Clone)]
 pub enum TrayMessage {
+    StartupSync,
     Sync,
     ReloadKwin,
     OpenSettings,
@@ -33,8 +35,12 @@ impl ksni::Tray for FanzyTray {
         "FanzyZones KDE".into()
     }
 
+    fn icon_theme_path(&self) -> String {
+        self.icon_theme_path.clone()
+    }
+
     fn icon_name(&self) -> String {
-        "preferences-system-windows".into()
+        "fanzyzones-kde".into()
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {

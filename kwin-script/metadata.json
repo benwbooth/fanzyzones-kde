@@ -9,7 +9,7 @@
     "Category": "Window Management",
     "Description": "FancyZones-style KDE window zones, dynamic workspaces, and macOS-like maximize/fullscreen desktops",
     "EnabledByDefault": false,
-    "Icon": "preferences-system-windows",
+    "Icon": "fanzyzones-kde",
     "Id": "fanzyzones_kde",
     "License": "MIT",
     "Name": "FanzyZones KDE",

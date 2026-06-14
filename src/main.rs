@@ -8,7 +8,8 @@ use clap::{Parser, Subcommand};
 use config::Settings;
 use ksni::TrayMethods;
 use kwin::KwinController;
-use std::path::PathBuf;
+use std::env;
+use std::path::{Path, PathBuf};
 use tokio::process::Command as ProcessCommand;
 use tray::{FanzyTray, TrayMessage};
 
@@ -129,9 +130,14 @@ async fn run_tray() -> Result<()> {
     let settings = load_and_save_settings()?;
     let controller = KwinController::from_environment()?;
     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let startup_sender = sender.clone();
     let tray = FanzyTray {
         settings,
-        status: format!("KWin script: {}", controller.script_dir().display()),
+        status: format!(
+            "Setting up KWin integration from {}...",
+            controller.script_dir().display()
+        ),
+        icon_theme_path: icon_theme_dir(),
         sender,
     };
     let handle = tray
@@ -139,6 +145,8 @@ async fn run_tray() -> Result<()> {
         .spawn()
         .await
         .context("spawn KDE tray item")?;
+
+    let _ = startup_sender.send(TrayMessage::StartupSync);
 
     loop {
         tokio::select! {
@@ -151,15 +159,20 @@ async fn run_tray() -> Result<()> {
                     handle.shutdown().await;
                     break;
                 }
+                let pending_status = pending_status(&message);
+                let success_status = success_status(&message);
+                let _ = handle.update(|tray: &mut FanzyTray| {
+                    tray.status = pending_status.into();
+                }).await;
                 let status = handle_message(message, &controller).await;
                 let _ = handle.update(|tray: &mut FanzyTray| {
                     match status {
                         Ok(Some(settings)) => {
                             tray.settings = settings;
-                            tray.status = "Settings updated".into();
+                            tray.status = success_status.into();
                         }
                         Ok(None) => {
-                            tray.status = "Done".into();
+                            tray.status = success_status.into();
                         }
                         Err(err) => {
                             tray.status = format!("Error: {err:#}");
@@ -178,6 +191,11 @@ async fn handle_message(
     controller: &KwinController,
 ) -> Result<Option<Settings>> {
     match message {
+        TrayMessage::StartupSync => {
+            let settings = load_and_save_settings()?;
+            controller.sync(&settings, true).await?;
+            Ok(Some(settings))
+        }
         TrayMessage::Sync => {
             let settings = load_and_save_settings()?;
             controller.sync(&settings, true).await?;
@@ -239,6 +257,56 @@ async fn handle_message(
         }
         TrayMessage::Quit => Ok(None),
     }
+}
+
+fn pending_status(message: &TrayMessage) -> &'static str {
+    match message {
+        TrayMessage::StartupSync => "Setting up KWin integration...",
+        TrayMessage::Sync => "Installing KWin script...",
+        TrayMessage::ReloadKwin => "Reloading KWin...",
+        TrayMessage::OpenSettings => "Opening settings...",
+        TrayMessage::ReloadSettings => "Reloading settings...",
+        TrayMessage::SetLayout(_) => "Changing layout...",
+        TrayMessage::SnapZone(_) => "Moving focused window...",
+        TrayMessage::NextZone => "Moving focused window...",
+        TrayMessage::PreviousZone => "Moving focused window...",
+        TrayMessage::Quit => "Quitting...",
+    }
+}
+
+fn success_status(message: &TrayMessage) -> &'static str {
+    match message {
+        TrayMessage::StartupSync => "KWin integration ready",
+        TrayMessage::Sync => "KWin script installed and enabled",
+        TrayMessage::ReloadKwin => "KWin reloaded",
+        TrayMessage::OpenSettings => "Settings opened",
+        TrayMessage::ReloadSettings => "Settings synced to KWin",
+        TrayMessage::SetLayout(_) => "Layout changed",
+        TrayMessage::SnapZone(_) => "Window moved",
+        TrayMessage::NextZone => "Window moved",
+        TrayMessage::PreviousZone => "Window moved",
+        TrayMessage::Quit => "Quitting...",
+    }
+}
+
+fn icon_theme_dir() -> String {
+    let candidates = [
+        env::var_os("FANZYZONES_KDE_ICON_THEME_DIR").map(PathBuf::from),
+        env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .map(|bin| bin.join("../share/icons")),
+        env::current_dir()
+            .ok()
+            .map(|dir| dir.join("resources/icons")),
+    ];
+
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.exists())
+        .map(|path| path.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn load_and_save_settings() -> Result<Settings> {

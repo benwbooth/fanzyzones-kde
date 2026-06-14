@@ -22,6 +22,8 @@ Plasma 6 KWin package, shared JSON settings, and tests for layout/config logic.
   - Priority (Left Focus)
   - Grid 3x3
 - Tray icon with layout selection and focused-window zone actions.
+- First-run tray setup that idempotently installs or upgrades the bundled KWin
+  script, writes settings, enables it, and asks KWin to reconfigure.
 - Focused-window snapping to zone 1 through 9.
 - Focused-window previous/next zone cycling.
 - Drag-to-snap with overlay.
@@ -70,6 +72,10 @@ fanzyzones-kde set-layout builtin.priority-left --sync
 fanzyzones-kde import-config ./settings.json --sync
 fanzyzones-kde disable
 ```
+
+Running `fanzyzones-kde tray` is enough for normal use; the tray app performs
+the same setup work as `fanzyzones-kde install --reload` on startup and reports
+setup errors in the tray menu.
 
 ## Layout JSON
 

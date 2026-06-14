@@ -54,9 +54,12 @@
           postInstall = ''
             mkdir -p $out/share/fanzyzones-kde
             cp -R kwin-script $out/share/fanzyzones-kde/kwin-script
+            mkdir -p $out/share/icons
+            cp -R resources/icons/hicolor $out/share/icons/
             wrapProgram $out/bin/fanzyzones-kde \
               --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps} \
-              --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script"
+              --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script" \
+              --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons"
           '';
 
           meta = with pkgs.lib; {
@@ -81,6 +84,7 @@
             echo "FanzyZones KDE development environment"
             echo "Run 'cargo test' or 'cargo run -- install --reload'"
             export FANZYZONES_KDE_KWIN_SCRIPT_DIR="$PWD/kwin-script"
+            export FANZYZONES_KDE_ICON_THEME_DIR="$PWD/resources/icons"
           '';
         };
       });

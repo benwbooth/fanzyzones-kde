@@ -656,6 +656,17 @@ Item {
         log("loaded with " + settings.layouts.length + " layouts");
     }
 
+    Timer {
+        interval: 50
+        running: overlay.visible
+        repeat: true
+        onTriggered: {
+            updateHighlightedZone();
+            if (settings.snap_mode === "modifier")
+                overlayContent.visible = modifiersSatisfied() || overlayForced;
+        }
+    }
+
     PlasmaCore.Dialog {
         id: overlay
 
@@ -681,17 +692,6 @@ Item {
         opacity: 1
         width: Workspace.virtualScreenSize.width
         height: Workspace.virtualScreenSize.height
-
-        Timer {
-            interval: 50
-            running: overlay.visible
-            repeat: true
-            onTriggered: {
-                updateHighlightedZone();
-                if (settings.snap_mode === "modifier")
-                    overlayContent.visible = modifiersSatisfied() || overlayForced;
-            }
-        }
 
         Item {
             id: overlayContent
