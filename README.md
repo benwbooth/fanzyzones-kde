@@ -82,8 +82,7 @@ Running `fanzyzones-kde tray` is enough for normal use; the tray app performs
 the same setup work as `fanzyzones-kde install --reload` on startup and reports
 setup errors in the tray menu.
 
-Left-clicking the tray icon opens the visual FanzyZones menu. Right-clicking
-opens the plain tray command menu.
+Left-clicking or right-clicking the tray icon opens the visual FanzyZones menu.
 
 ## Layout JSON
 

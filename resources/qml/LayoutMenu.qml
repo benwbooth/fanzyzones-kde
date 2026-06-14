@@ -31,12 +31,15 @@ Window {
     readonly property color menuBg: systemPalette.window
     readonly property color cardBg: systemPalette.base
     readonly property color textColor: systemPalette.windowText
+    readonly property color highlightBg: systemPalette.highlight
+    readonly property color highlightTextColor: systemPalette.highlightedText
     readonly property color mutedTextColor: Qt.rgba(textColor.r, textColor.g, textColor.b, 0.66)
     readonly property color subtleTextColor: Qt.rgba(textColor.r, textColor.g, textColor.b, 0.48)
-    readonly property color borderColor: darkMode ? Qt.rgba(1, 1, 1, 0.18) : Qt.rgba(0, 0, 0, 0.16)
-    readonly property color separatorColor: darkMode ? Qt.rgba(1, 1, 1, 0.13) : Qt.rgba(0, 0, 0, 0.12)
-    readonly property color hoverBg: darkMode ? Qt.rgba(1, 1, 1, 0.08) : Qt.rgba(0, 0, 0, 0.06)
-    readonly property color labelHoverBg: Qt.rgba(accent.r, accent.g, accent.b, darkMode ? 0.24 : 0.14)
+    readonly property color borderColor: darkMode ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(0, 0, 0, 0.18)
+    readonly property color separatorColor: darkMode ? Qt.rgba(1, 1, 1, 0.10) : Qt.rgba(0, 0, 0, 0.10)
+    readonly property color hoverBg: highlightBg
+    readonly property color hoverTextColor: highlightTextColor
+    readonly property color checkedBg: Qt.rgba(highlightBg.r, highlightBg.g, highlightBg.b, darkMode ? 0.22 : 0.12)
     readonly property color dangerColor: "#dc2626"
     readonly property real availableLeft: Math.min(0, Screen.virtualX)
     readonly property real availableTop: Math.min(0, Screen.virtualY)
@@ -298,14 +301,14 @@ Window {
 
     Rectangle {
         anchors.fill: parent
-        radius: 8
+        radius: 4
         color: root.menuBg
         border.color: root.borderColor
         border.width: 1
 
         Flickable {
             anchors.fill: parent
-            anchors.margins: 9
+            anchors.margins: 6
             contentWidth: width
             contentHeight: menuColumn.implicitHeight
             clip: true
@@ -313,7 +316,7 @@ Window {
             Column {
                 id: menuColumn
                 width: parent.width
-                spacing: 5
+                spacing: 3
 
                 Item {
                     width: parent.width
@@ -519,7 +522,7 @@ Window {
         property color labelColor: root.textColor
 
         height: 30
-        radius: 5
+        radius: 3
         color: mouse.containsMouse && actionEnabled ? root.hoverBg : "transparent"
         opacity: actionEnabled ? 1 : 0.78
 
@@ -529,7 +532,9 @@ Window {
             x: 8
             width: parent.width - 16
             elide: Text.ElideRight
-            color: actionRoot.labelColor
+            color: mouse.containsMouse && actionRoot.actionEnabled
+                ? root.hoverTextColor
+                : actionRoot.labelColor
             font.pixelSize: 12
         }
 
@@ -552,12 +557,10 @@ Window {
         property color accent: "#3b82f6"
 
         height: 28
-        radius: 5
-        color: checked
-            ? Qt.rgba(accent.r, accent.g, accent.b, root.darkMode ? 0.28 : 0.14)
-            : (mouse.containsMouse ? root.hoverBg : "transparent")
-        border.color: checked ? accent : root.borderColor
-        border.width: checked ? 1 : 0
+        radius: 3
+        color: mouse.containsMouse ? root.hoverBg : (checked ? root.checkedBg : "transparent")
+        border.color: checked && !mouse.containsMouse ? accent : "transparent"
+        border.width: checked && !mouse.containsMouse ? 1 : 0
 
         Text {
             id: label
@@ -565,7 +568,7 @@ Window {
             width: parent.width - 12
             horizontalAlignment: Text.AlignHCenter
             elide: Text.ElideRight
-            color: checked ? pillRoot.accent : root.textColor
+            color: mouse.containsMouse ? root.hoverTextColor : (checked ? pillRoot.accent : root.textColor)
             font.pixelSize: 11
             font.bold: checked
         }
@@ -595,11 +598,11 @@ Window {
         readonly property real labelWidth: 150
         readonly property real diagramX: padding + labelWidth + padding
 
-        height: 92
+        height: 90
 
         Rectangle {
             anchors.fill: parent
-            radius: 6
+            radius: 3
             color: root.cardBg
             border.color: active ? row.accent : root.separatorColor
             border.width: active ? 1 : 0
@@ -610,8 +613,8 @@ Window {
             y: row.padding
             width: row.labelWidth
             height: parent.height - row.padding * 2
-            radius: 5
-            color: labelMouse.containsMouse ? root.labelHoverBg : "transparent"
+            radius: 3
+            color: labelMouse.containsMouse ? root.hoverBg : "transparent"
 
             MouseArea {
                 id: labelMouse
@@ -628,7 +631,7 @@ Window {
                 width: parent.width - 6
                 text: row.layout.name
                 elide: Text.ElideRight
-                color: root.textColor
+                color: labelMouse.containsMouse ? root.hoverTextColor : root.textColor
                 font.pixelSize: 12
                 font.bold: row.active
             }
@@ -638,7 +641,7 @@ Window {
                 y: 36
                 visible: row.active
                 text: "Active"
-                color: row.accent
+                color: labelMouse.containsMouse ? root.hoverTextColor : row.accent
                 font.pixelSize: 10
             }
 
@@ -650,7 +653,7 @@ Window {
 
                 Text {
                     text: "Edit"
-                    color: editMouse.containsMouse ? row.accent : root.subtleTextColor
+                    color: labelMouse.containsMouse ? root.hoverTextColor : (editMouse.containsMouse ? row.accent : root.subtleTextColor)
                     font.pixelSize: 10
 
                     MouseArea {
@@ -664,7 +667,7 @@ Window {
 
                 Text {
                     text: "Delete"
-                    color: deleteMouse.containsMouse ? root.dangerColor : root.subtleTextColor
+                    color: labelMouse.containsMouse ? root.hoverTextColor : (deleteMouse.containsMouse ? root.dangerColor : root.subtleTextColor)
                     font.pixelSize: 10
 
                     MouseArea {
@@ -684,7 +687,7 @@ Window {
             y: row.padding
             width: parent.width - row.diagramX - row.padding
             height: parent.height - row.padding * 2
-            radius: 6
+            radius: 3
             color: root.darkMode ? Qt.rgba(1, 1, 1, 0.035) : Qt.rgba(0, 0, 0, 0.035)
             border.color: row.active ? row.accent : root.borderColor
             border.width: row.active ? 2 : 1
@@ -701,9 +704,13 @@ Window {
                     y: zr.y + 2
                     width: Math.max(4, zr.width - 4)
                     height: Math.max(4, zr.height - 4)
-                    radius: 3
-                    color: Qt.rgba(row.accent.r, row.accent.g, row.accent.b, zoneMouse.containsMouse ? 0.52 : (root.darkMode ? 0.28 : 0.18))
-                    border.color: Qt.rgba(row.accent.r, row.accent.g, row.accent.b, zoneMouse.containsMouse ? 0.95 : 0.42)
+                    radius: 2
+                    color: zoneMouse.containsMouse
+                        ? root.hoverBg
+                        : Qt.rgba(row.accent.r, row.accent.g, row.accent.b, root.darkMode ? 0.28 : 0.18)
+                    border.color: zoneMouse.containsMouse
+                        ? root.hoverBg
+                        : Qt.rgba(row.accent.r, row.accent.g, row.accent.b, 0.42)
                     border.width: zoneMouse.containsMouse ? 2 : 1
 
                     MouseArea {

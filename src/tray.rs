@@ -21,7 +21,7 @@ pub enum TrayMessage {
 }
 
 impl ksni::Tray for FanzyTray {
-    const MENU_ON_ACTIVATE: bool = false;
+    const MENU_ON_ACTIVATE: bool = true;
 
     fn id(&self) -> String {
         "fanzyzones-kde".into()
@@ -51,6 +51,15 @@ impl ksni::Tray for FanzyTray {
     fn context_menu(&mut self, x: i32, y: i32) {
         let _ = self.sender.send(TrayMessage::OpenVisualMenu {
             source: "context_menu",
+            x,
+            y,
+            status: self.status.clone(),
+        });
+    }
+
+    fn secondary_activate(&mut self, x: i32, y: i32) {
+        let _ = self.sender.send(TrayMessage::OpenVisualMenu {
+            source: "secondary_activate",
             x,
             y,
             status: self.status.clone(),
