@@ -15,7 +15,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::Stdio;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::process::Command as ProcessCommand;
@@ -247,6 +247,9 @@ async fn run_tray() -> Result<()> {
                                 tray.status = "Opening FanzyZones menu...".into();
                             })
                             .await;
+                        if should_delay_visual_menu_open(source) {
+                            tokio::time::sleep(Duration::from_millis(220)).await;
+                        }
                         match spawn_visual_menu(anchor, &status, menu_sender.clone()).await {
                             Ok(menu) => running_menu = Some(menu),
                             Err(err) => {
@@ -341,6 +344,10 @@ async fn run_tray() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn should_delay_visual_menu_open(source: &str) -> bool {
+    source == "context_menu"
 }
 
 #[derive(Debug)]
