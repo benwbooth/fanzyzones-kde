@@ -11,8 +11,10 @@ Window {
     property var settings: parseSettings()
     property var anchor: parseAnchor()
     property string integrationStatus: parseStatus()
+    property string actionUrl: parseActionUrl()
     property int activeLayout: settings.active_layout || 0
     property bool closeOnDeactivate: false
+    property bool actionEmitted: false
     property color accent: Qt.rgba(
         settings.highlight_color ? settings.highlight_color.red : 0.18,
         settings.highlight_color ? settings.highlight_color.green : 0.48,
@@ -34,6 +36,10 @@ Window {
     readonly property color hoverBg: darkMode ? Qt.rgba(1, 1, 1, 0.08) : Qt.rgba(0, 0, 0, 0.06)
     readonly property color labelHoverBg: Qt.rgba(accent.r, accent.g, accent.b, darkMode ? 0.24 : 0.14)
     readonly property color dangerColor: "#dc2626"
+    readonly property real availableLeft: Math.min(0, Screen.virtualX)
+    readonly property real availableTop: Math.min(0, Screen.virtualY)
+    readonly property real availableRight: availableLeft + Screen.desktopAvailableWidth
+    readonly property real availableBottom: availableTop + Screen.desktopAvailableHeight
 
     SystemPalette {
         id: systemPalette
@@ -43,21 +49,19 @@ Window {
     visible: true
     width: 346
     height: Math.min(menuColumn.implicitHeight + 18, Math.max(220, Screen.desktopAvailableHeight - 80))
-    x: anchor.valid
-        ? clamp(anchor.x - width + 24, menuMargin, Screen.desktopAvailableWidth - width - menuMargin)
-        : Math.max(menuMargin, Screen.desktopAvailableWidth - width - 18)
-    y: anchor.valid
-        ? (anchor.y > Screen.desktopAvailableHeight / 2
-            ? clamp(anchor.y - height - menuMargin, menuMargin, Screen.desktopAvailableHeight - height - menuMargin)
-            : clamp(anchor.y + menuMargin, menuMargin, Screen.desktopAvailableHeight - height - menuMargin))
-        : 42
+    x: contextMenuX()
+    y: contextMenuY()
     color: "transparent"
     title: "FanzyZones"
     flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
 
     onActiveChanged: {
-        if (closeOnDeactivate && !active)
-            Qt.quit();
+        if (!closeOnDeactivate || actionEmitted)
+            return;
+        if (active)
+            deactivateCloseTimer.stop();
+        else
+            deactivateCloseTimer.restart();
     }
 
     function parseSettings() {
@@ -89,8 +93,40 @@ Window {
         return "KWin integration ready";
     }
 
+    function parseActionUrl() {
+        for (let i = 0; i < Qt.application.arguments.length - 1; i++) {
+            if (Qt.application.arguments[i] === "--fanzyzones-action-url")
+                return Qt.application.arguments[i + 1];
+        }
+        return "";
+    }
+
     function clamp(value, minimum, maximum) {
         return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    function contextMenuX() {
+        const minX = availableLeft + menuMargin;
+        const maxX = availableRight - width - menuMargin;
+        if (!anchor.valid)
+            return clamp(availableRight - width - menuMargin, minX, maxX);
+
+        let proposed = anchor.x;
+        if (proposed + width > availableRight - menuMargin)
+            proposed = anchor.x - width;
+        return clamp(proposed, minX, maxX);
+    }
+
+    function contextMenuY() {
+        const minY = availableTop + menuMargin;
+        const maxY = availableBottom - height - menuMargin;
+        if (!anchor.valid)
+            return clamp(availableTop + menuMargin, minY, maxY);
+
+        let proposed = anchor.y;
+        if (proposed + height > availableBottom - menuMargin)
+            proposed = anchor.y - height;
+        return clamp(proposed, minY, maxY);
     }
 
     function orderedLayoutIndexes() {
@@ -106,7 +142,21 @@ Window {
     }
 
     function emitAction(action) {
-        console.log(actionPrefix + JSON.stringify(action));
+        actionEmitted = true;
+        deactivateCloseTimer.stop();
+        const payload = JSON.stringify(action);
+        if (actionUrl.length > 0) {
+            try {
+                const request = new XMLHttpRequest();
+                request.open("POST", actionUrl, false);
+                request.setRequestHeader("Content-Type", "text/plain");
+                request.send(payload);
+            } catch (error) {
+                print(actionPrefix + payload);
+            }
+        } else {
+            print(actionPrefix + payload);
+        }
         Qt.quit();
     }
 
@@ -130,6 +180,16 @@ Window {
         interval: 150
         repeat: false
         onTriggered: root.closeOnDeactivate = true
+    }
+
+    Timer {
+        id: deactivateCloseTimer
+        interval: 180
+        repeat: false
+        onTriggered: {
+            if (!root.active && !root.actionEmitted)
+                Qt.quit();
+        }
     }
 
     Shortcut {

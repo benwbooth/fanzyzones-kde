@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::process::Command as ProcessCommand;
 use tokio::sync::mpsc::UnboundedSender;
 use tray::{FanzyTray, TrayMessage};
@@ -248,38 +250,72 @@ async fn run_tray() -> Result<()> {
                     }
                 }
             }
-            Some(finished) = menu_receiver.recv() => {
-                let Some(menu) = running_menu.take() else {
-                    continue;
-                };
-                if finished.token != menu.token {
-                    running_menu = Some(menu);
-                    continue;
-                }
+            Some(event) = menu_receiver.recv() => {
+                match event {
+                    VisualMenuEvent::Action { token, payload } => {
+                        let Some(mut menu) = running_menu.take() else {
+                            continue;
+                        };
+                        if token != menu.token {
+                            running_menu = Some(menu);
+                            continue;
+                        }
+                        close_visual_menu(&mut menu).await;
+                        let menu_status = handle_visual_menu_payload(&payload, &controller).await;
+                        let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
+                        let _ = handle
+                            .update(|tray: &mut FanzyTray| match menu_status {
+                                Ok(HandleOutcome::Settings(settings)) => {
+                                    tray.settings = settings;
+                                    tray.status = "FanzyZones menu closed".into();
+                                }
+                                Ok(HandleOutcome::Quit) => {
+                                    tray.status = "Quitting...".into();
+                                }
+                                Err(err) => {
+                                    tray.status = format!("Error: {err:#}");
+                                }
+                            })
+                            .await;
+                        if should_quit {
+                            handle.shutdown().await;
+                            break;
+                        }
+                    }
+                    VisualMenuEvent::Finished(finished) => {
+                        let Some(menu) = running_menu.take() else {
+                            continue;
+                        };
+                        if finished.token != menu.token {
+                            running_menu = Some(menu);
+                            continue;
+                        }
 
-                let menu_status = handle_visual_menu_finished(
-                    finished.result,
-                    menu.closing,
-                    &controller,
-                ).await;
-                let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
-                let _ = handle
-                    .update(|tray: &mut FanzyTray| match menu_status {
-                        Ok(HandleOutcome::Settings(settings)) => {
-                            tray.settings = settings;
-                            tray.status = "FanzyZones menu closed".into();
+                        let menu_status = handle_visual_menu_finished(
+                            finished.result,
+                            menu.closing,
+                            &controller,
+                        ).await;
+                        let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
+                        let _ = handle
+                            .update(|tray: &mut FanzyTray| match menu_status {
+                                Ok(HandleOutcome::Settings(settings)) => {
+                                    tray.settings = settings;
+                                    tray.status = "FanzyZones menu closed".into();
+                                }
+                                Ok(HandleOutcome::Quit) => {
+                                    tray.status = "Quitting...".into();
+                                }
+                                Err(err) => {
+                                    tray.status = format!("Error: {err:#}");
+                                }
+                            })
+                            .await;
+                        if should_quit {
+                            handle.shutdown().await;
+                            break;
                         }
-                        Ok(HandleOutcome::Quit) => {
-                            tray.status = "Quitting...".into();
-                        }
-                        Err(err) => {
-                            tray.status = format!("Error: {err:#}");
-                        }
-                    })
-                    .await;
-                if should_quit {
-                    handle.shutdown().await;
-                    break;
+                    }
                 }
             }
         }
@@ -356,6 +392,12 @@ struct VisualMenuFinished {
 }
 
 #[derive(Debug)]
+enum VisualMenuEvent {
+    Action { token: String, payload: String },
+    Finished(VisualMenuFinished),
+}
+
+#[derive(Debug)]
 struct VisualMenuOutput {
     qml_path: PathBuf,
     status: ExitStatus,
@@ -366,18 +408,37 @@ struct VisualMenuOutput {
 async fn spawn_visual_menu(
     anchor: Option<(i32, i32)>,
     status: &str,
-    menu_sender: UnboundedSender<VisualMenuFinished>,
+    menu_sender: UnboundedSender<VisualMenuEvent>,
 ) -> Result<RunningVisualMenu> {
     let settings = load_and_save_settings()?;
     let qml_path = layout_menu_qml_path()?;
     let settings_json = settings.compact_json()?;
     let token = visual_menu_token()?;
+    let action_listener = TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .context("bind visual menu action listener")?;
+    let action_url = format!(
+        "http://127.0.0.1:{}/{}",
+        action_listener.local_addr()?.port(),
+        token
+    );
     let mut command = visual_menu_command(&qml_path, settings_json, anchor, status);
+    command.arg("--fanzyzones-action-url").arg(&action_url);
     let child = command
         .spawn()
         .with_context(|| format!("open visual menu {}", qml_path.display()))?;
     let pid = child.id();
     let finished_token = token.clone();
+    let action_token = token.clone();
+    let action_sender = menu_sender.clone();
+    tokio::spawn(async move {
+        if let Ok(payload) = receive_visual_menu_action(action_listener).await {
+            let _ = action_sender.send(VisualMenuEvent::Action {
+                token: action_token,
+                payload,
+            });
+        }
+    });
     tokio::spawn(async move {
         let result = child
             .wait_with_output()
@@ -389,16 +450,71 @@ async fn spawn_visual_menu(
                 stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
             })
             .map_err(anyhow::Error::from);
-        let _ = menu_sender.send(VisualMenuFinished {
+        let _ = menu_sender.send(VisualMenuEvent::Finished(VisualMenuFinished {
             token: finished_token,
             result,
-        });
+        }));
     });
     Ok(RunningVisualMenu {
         token,
         pid,
         closing: false,
     })
+}
+
+async fn receive_visual_menu_action(listener: TcpListener) -> Result<String> {
+    let (mut stream, _) = listener
+        .accept()
+        .await
+        .context("accept visual menu action")?;
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let mut header_end = None;
+    let mut content_length = None;
+
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .await
+            .context("read visual menu action")?;
+        if read == 0 {
+            break;
+        }
+        request.extend_from_slice(&buffer[..read]);
+        if request.len() > 64 * 1024 {
+            anyhow::bail!("visual menu action request too large");
+        }
+
+        if header_end.is_none() {
+            header_end = request.windows(4).position(|window| window == b"\r\n\r\n");
+            if let Some(end) = header_end {
+                let headers = String::from_utf8_lossy(&request[..end]);
+                content_length = headers.lines().find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                });
+            }
+        }
+
+        if let (Some(end), Some(length)) = (header_end, content_length) {
+            let body_start = end + 4;
+            if request.len() >= body_start + length {
+                let body = String::from_utf8(request[body_start..body_start + length].to_vec())
+                    .context("decode visual menu action")?;
+                stream
+                    .write_all(
+                        b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: *\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .await
+                    .ok();
+                return Ok(body);
+            }
+        }
+    }
+
+    anyhow::bail!("visual menu action request ended before body")
 }
 
 async fn close_visual_menu(menu: &mut RunningVisualMenu) {
@@ -472,6 +588,19 @@ async fn handle_visual_menu_output(
         if handle_visual_menu_action(action, controller, &mut settings).await? {
             return Ok(HandleOutcome::Quit);
         }
+    }
+    Ok(HandleOutcome::Settings(settings))
+}
+
+async fn handle_visual_menu_payload(
+    payload: &str,
+    controller: &KwinController,
+) -> Result<HandleOutcome> {
+    let action = serde_json::from_str(payload)
+        .with_context(|| format!("parse visual menu action {}", payload))?;
+    let mut settings = load_and_save_settings()?;
+    if handle_visual_menu_action(action, controller, &mut settings).await? {
+        return Ok(HandleOutcome::Quit);
     }
     Ok(HandleOutcome::Settings(settings))
 }
