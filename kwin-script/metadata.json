@@ -1,0 +1,27 @@
+{
+  "KPackageStructure": "KWin/Script",
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "Ben Booth"
+      }
+    ],
+    "Category": "Window Management",
+    "Description": "FancyZones-style KDE window zones, dynamic workspaces, and macOS-like maximize/fullscreen desktops",
+    "EnabledByDefault": false,
+    "Icon": "preferences-system-windows",
+    "Id": "fanzyzones_kde",
+    "License": "MIT",
+    "Name": "FanzyZones KDE",
+    "ServiceTypes": [
+      "KWin/Script"
+    ],
+    "Version": "0.1.0",
+    "Website": "https://github.com/benwbooth/fanzyzones-kde"
+  },
+  "X-KDE-ConfigModule": "kwin/effects/configs/kcm_kwin4_genericscripted",
+  "X-KDE-PluginKeyword": "fanzyzones_kde",
+  "X-Plasma-API": "declarativescript",
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-MainScript": "ui/main.qml"
+}
