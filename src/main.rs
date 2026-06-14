@@ -9,11 +9,14 @@ use config::{Settings, SnapMode};
 use ksni::TrayMethods;
 use kwin::KwinController;
 use serde::Deserialize;
+use std::collections::VecDeque;
 use std::env;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command as ProcessCommand;
+use tokio::sync::mpsc::error::TryRecvError;
 use tray::{FanzyTray, TrayMessage};
 
 #[derive(Debug, Parser)]
@@ -81,7 +84,9 @@ async fn main() -> Result<()> {
         CliCommand::Tray => run_tray().await,
         CliCommand::VisualMenu => {
             let controller = KwinController::from_environment()?;
-            run_visual_menu(&controller, None).await.map(|_| ())
+            run_visual_menu(&controller, None, "KWin integration ready")
+                .await
+                .map(|_| ())
         }
         CliCommand::Install { reload } => {
             let settings = load_and_save_settings()?;
@@ -178,111 +183,89 @@ async fn run_tray() -> Result<()> {
 
     let _ = startup_sender.send(TrayMessage::StartupSync);
 
+    let mut deferred_messages = VecDeque::new();
     loop {
-        tokio::select! {
-            _ = tokio::signal::ctrl_c() => {
-                handle.shutdown().await;
-                break;
-            }
-            Some(message) = receiver.recv() => {
-                if matches!(message, TrayMessage::Quit) {
+        let message = if let Some(message) = deferred_messages.pop_front() {
+            message
+        } else {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
                     handle.shutdown().await;
                     break;
                 }
-                let pending_status = pending_status(&message);
-                let success_status = success_status(&message);
-                let _ = handle.update(|tray: &mut FanzyTray| {
-                    tray.status = pending_status.into();
-                }).await;
-                let status = handle_message(message, &controller).await;
-                let _ = handle.update(|tray: &mut FanzyTray| {
-                    match status {
-                        Ok(Some(settings)) => {
-                            tray.settings = settings;
-                            tray.status = success_status.into();
-                        }
-                        Ok(None) => {
-                            tray.status = success_status.into();
-                        }
-                        Err(err) => {
-                            tray.status = format!("Error: {err:#}");
-                        }
-                    }
-                }).await;
+                Some(message) = receiver.recv() => message,
             }
+        };
+
+        let opened_visual_menu = matches!(message, TrayMessage::OpenVisualMenu { .. });
+        let pending_status = pending_status(&message);
+        let success_status = success_status(&message);
+        let _ = handle
+            .update(|tray: &mut FanzyTray| {
+                tray.status = pending_status.into();
+            })
+            .await;
+        let status = handle_message(message, &controller).await;
+        let should_quit = matches!(status, Ok(HandleOutcome::Quit));
+        let _ = handle
+            .update(|tray: &mut FanzyTray| match status {
+                Ok(HandleOutcome::Settings(settings)) => {
+                    tray.settings = settings;
+                    tray.status = success_status.into();
+                }
+                Ok(HandleOutcome::Quit) => {
+                    tray.status = success_status.into();
+                }
+                Err(err) => {
+                    tray.status = format!("Error: {err:#}");
+                }
+            })
+            .await;
+        if opened_visual_menu {
+            drain_stale_visual_menu_toggles(&mut receiver, &mut deferred_messages);
+        }
+        if should_quit {
+            handle.shutdown().await;
+            break;
         }
     }
 
     Ok(())
 }
 
+#[derive(Debug)]
+enum HandleOutcome {
+    Settings(Settings),
+    Quit,
+}
+
 async fn handle_message(
     message: TrayMessage,
     controller: &KwinController,
-) -> Result<Option<Settings>> {
+) -> Result<HandleOutcome> {
     match message {
         TrayMessage::StartupSync => {
             let settings = load_and_save_settings()?;
             controller.sync(&settings, true).await?;
-            Ok(Some(settings))
+            Ok(HandleOutcome::Settings(settings))
         }
-        TrayMessage::OpenVisualMenu { x, y } => {
+        TrayMessage::OpenVisualMenu { x, y, status } => {
             let anchor = (x >= 0 && y >= 0).then_some((x, y));
-            let settings = run_visual_menu(controller, anchor).await?;
-            Ok(Some(settings))
+            run_visual_menu(controller, anchor, &status).await
         }
-        TrayMessage::Sync => {
-            let settings = load_and_save_settings()?;
-            controller.sync(&settings, true).await?;
-            Ok(Some(settings))
+    }
+}
+
+fn drain_stale_visual_menu_toggles(
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<TrayMessage>,
+    deferred_messages: &mut VecDeque<TrayMessage>,
+) {
+    loop {
+        match receiver.try_recv() {
+            Ok(TrayMessage::OpenVisualMenu { .. }) => {}
+            Ok(message) => deferred_messages.push_back(message),
+            Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
         }
-        TrayMessage::ReloadKwin => {
-            controller.reload_kwin().await?;
-            Ok(None)
-        }
-        TrayMessage::OpenSettings => {
-            let settings = load_and_save_settings()?;
-            open_settings_file(&settings).await?;
-            Ok(Some(settings))
-        }
-        TrayMessage::ReloadSettings => {
-            let settings = load_and_save_settings()?;
-            controller.write_settings(&settings).await?;
-            controller.reload_kwin().await?;
-            Ok(Some(settings))
-        }
-        TrayMessage::SetLayout(index) => {
-            let mut settings = load_and_save_settings()?;
-            if index < settings.layouts.len() {
-                settings.active_layout = index;
-                config::save(&settings)?;
-                controller.write_settings(&settings).await?;
-                controller.set_runtime_layout(index).await?;
-                Ok(Some(settings))
-            } else {
-                anyhow::bail!("layout {} does not exist", index + 1);
-            }
-        }
-        TrayMessage::SnapZone(index) => {
-            let settings = load_and_save_settings()?;
-            controller
-                .snap_active_window_to_layout_zone(&settings, settings.active_layout, index)
-                .await?;
-            Ok(None)
-        }
-        TrayMessage::NextZone => {
-            controller
-                .invoke_shortcut("FanzyZones: Move active window to next zone")
-                .await?;
-            Ok(None)
-        }
-        TrayMessage::PreviousZone => {
-            controller
-                .invoke_shortcut("FanzyZones: Move active window to previous zone")
-                .await?;
-            Ok(None)
-        }
-        TrayMessage::Quit => Ok(None),
     }
 }
 
@@ -290,15 +273,6 @@ fn pending_status(message: &TrayMessage) -> &'static str {
     match message {
         TrayMessage::StartupSync => "Setting up KWin integration...",
         TrayMessage::OpenVisualMenu { .. } => "Opening FanzyZones menu...",
-        TrayMessage::Sync => "Installing KWin script...",
-        TrayMessage::ReloadKwin => "Reloading KWin...",
-        TrayMessage::OpenSettings => "Opening settings...",
-        TrayMessage::ReloadSettings => "Reloading settings...",
-        TrayMessage::SetLayout(_) => "Changing layout...",
-        TrayMessage::SnapZone(_) => "Moving focused window...",
-        TrayMessage::NextZone => "Moving focused window...",
-        TrayMessage::PreviousZone => "Moving focused window...",
-        TrayMessage::Quit => "Quitting...",
     }
 }
 
@@ -306,15 +280,6 @@ fn success_status(message: &TrayMessage) -> &'static str {
     match message {
         TrayMessage::StartupSync => "KWin integration ready",
         TrayMessage::OpenVisualMenu { .. } => "FanzyZones menu closed",
-        TrayMessage::Sync => "KWin script installed and enabled",
-        TrayMessage::ReloadKwin => "KWin reloaded",
-        TrayMessage::OpenSettings => "Settings opened",
-        TrayMessage::ReloadSettings => "Settings synced to KWin",
-        TrayMessage::SetLayout(_) => "Layout changed",
-        TrayMessage::SnapZone(_) => "Window moved",
-        TrayMessage::NextZone => "Window moved",
-        TrayMessage::PreviousZone => "Window moved",
-        TrayMessage::Quit => "Quitting...",
     }
 }
 
@@ -328,12 +293,21 @@ enum VisualMenuAction {
     EditLayout { layout: usize },
     DeleteLayout { layout: usize },
     OpenSettings,
+    RevealConfig,
+    PreviousZone,
+    NextZone,
+    Sync,
+    ReloadSettings,
+    ReloadKwin,
+    About,
+    Quit,
 }
 
 async fn run_visual_menu(
     controller: &KwinController,
     anchor: Option<(i32, i32)>,
-) -> Result<Settings> {
+    status: &str,
+) -> Result<HandleOutcome> {
     let settings = load_and_save_settings()?;
     let qml_path = layout_menu_qml_path()?;
     let settings_json = settings.compact_json()?;
@@ -341,6 +315,8 @@ async fn run_visual_menu(
         .arg(&qml_path)
         .arg("--")
         .arg(settings_json)
+        .arg("--fanzyzones-status")
+        .arg(status)
         .args(anchor.into_iter().flat_map(|(x, y)| {
             [
                 "--fanzyzones-anchor".to_string(),
@@ -367,16 +343,18 @@ async fn run_visual_menu(
 
     let mut settings = load_and_save_settings()?;
     if let Some(action) = parse_visual_menu_action(&stdout, &stderr)? {
-        handle_visual_menu_action(action, controller, &mut settings).await?;
+        if handle_visual_menu_action(action, controller, &mut settings).await? {
+            return Ok(HandleOutcome::Quit);
+        }
     }
-    Ok(settings)
+    Ok(HandleOutcome::Settings(settings))
 }
 
 async fn handle_visual_menu_action(
     action: VisualMenuAction,
     controller: &KwinController,
     settings: &mut Settings,
-) -> Result<()> {
+) -> Result<bool> {
     match action {
         VisualMenuAction::SetLayout { layout } => {
             ensure_layout_exists(settings, layout)?;
@@ -419,8 +397,37 @@ async fn handle_visual_menu_action(
         VisualMenuAction::OpenSettings => {
             open_settings_file(settings).await?;
         }
+        VisualMenuAction::RevealConfig => {
+            open_config_dir().await?;
+        }
+        VisualMenuAction::PreviousZone => {
+            controller
+                .invoke_shortcut("FanzyZones: Move active window to previous zone")
+                .await?;
+        }
+        VisualMenuAction::NextZone => {
+            controller
+                .invoke_shortcut("FanzyZones: Move active window to next zone")
+                .await?;
+        }
+        VisualMenuAction::Sync => {
+            controller.sync(settings, true).await?;
+        }
+        VisualMenuAction::ReloadSettings => {
+            controller.write_settings(settings).await?;
+            reload_runtime_settings_or_kwin(controller).await?;
+        }
+        VisualMenuAction::ReloadKwin => {
+            controller.reload_kwin().await?;
+        }
+        VisualMenuAction::About => {
+            open_url("https://github.com/benwbooth/fanzyzones-kde").await?;
+        }
+        VisualMenuAction::Quit => {
+            return Ok(true);
+        }
     }
-    Ok(())
+    Ok(false)
 }
 
 async fn reload_runtime_settings_or_kwin(controller: &KwinController) -> Result<()> {
@@ -525,6 +532,27 @@ async fn open_settings_file(settings: &Settings) -> Result<()> {
         .arg(&path)
         .spawn()
         .with_context(|| format!("open {}", path.display()))?;
+    Ok(())
+}
+
+async fn open_config_dir() -> Result<()> {
+    let path = config::settings_path()?;
+    let dir = path
+        .parent()
+        .with_context(|| format!("resolve parent for {}", path.display()))?;
+    fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))?;
+    ProcessCommand::new("xdg-open")
+        .arg(dir)
+        .spawn()
+        .with_context(|| format!("open {}", dir.display()))?;
+    Ok(())
+}
+
+async fn open_url(url: &str) -> Result<()> {
+    ProcessCommand::new("xdg-open")
+        .arg(url)
+        .spawn()
+        .with_context(|| format!("open {url}"))?;
     Ok(())
 }
 

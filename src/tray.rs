@@ -1,5 +1,4 @@
 use crate::config::Settings;
-use ksni::menu::{RadioGroup, RadioItem, StandardItem, SubMenu};
 use tokio::sync::mpsc::UnboundedSender;
 
 #[derive(Debug, Clone)]
@@ -13,16 +12,7 @@ pub struct FanzyTray {
 #[derive(Debug, Clone)]
 pub enum TrayMessage {
     StartupSync,
-    OpenVisualMenu { x: i32, y: i32 },
-    Sync,
-    ReloadKwin,
-    OpenSettings,
-    ReloadSettings,
-    SetLayout(usize),
-    SnapZone(usize),
-    NextZone,
-    PreviousZone,
-    Quit,
+    OpenVisualMenu { x: i32, y: i32, status: String },
 }
 
 impl ksni::Tray for FanzyTray {
@@ -45,9 +35,19 @@ impl ksni::Tray for FanzyTray {
     }
 
     fn activate(&mut self, _x: i32, _y: i32) {
-        let _ = self
-            .sender
-            .send(TrayMessage::OpenVisualMenu { x: _x, y: _y });
+        let _ = self.sender.send(TrayMessage::OpenVisualMenu {
+            x: _x,
+            y: _y,
+            status: self.status.clone(),
+        });
+    }
+
+    fn context_menu(&mut self, x: i32, y: i32) {
+        let _ = self.sender.send(TrayMessage::OpenVisualMenu {
+            x,
+            y,
+            status: self.status.clone(),
+        });
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -63,163 +63,6 @@ impl ksni::Tray for FanzyTray {
     }
 
     fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-        use ksni::menu::MenuItem;
-
-        let mut items: Vec<MenuItem<Self>> = vec![
-            StandardItem {
-                label: "Open FanzyZones Menu".into(),
-                icon_name: "fanzyzones-kde".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this
-                        .sender
-                        .send(TrayMessage::OpenVisualMenu { x: -1, y: -1 });
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: format!("Active: {}", self.settings.active_layout_name()),
-                enabled: false,
-                icon_name: "view-grid".into(),
-                ..Default::default()
-            }
-            .into(),
-        ];
-
-        items.push(
-            SubMenu {
-                label: "Layouts".into(),
-                icon_name: "view-list-icons".into(),
-                submenu: vec![RadioGroup {
-                    selected: self.settings.active_layout,
-                    select: Box::new(|this: &mut Self, selected| {
-                        let _ = this.sender.send(TrayMessage::SetLayout(selected));
-                    }),
-                    options: self
-                        .settings
-                        .layouts
-                        .iter()
-                        .map(|layout| RadioItem {
-                            label: layout.name.clone(),
-                            ..Default::default()
-                        })
-                        .collect(),
-                }
-                .into()],
-                ..Default::default()
-            }
-            .into(),
-        );
-
-        let active_layout = self
-            .settings
-            .layouts
-            .get(self.settings.active_layout)
-            .cloned();
-        if let Some(layout) = active_layout {
-            items.push(
-                SubMenu {
-                    label: "Snap Focused Window".into(),
-                    icon_name: "transform-move".into(),
-                    submenu: layout
-                        .zones
-                        .iter()
-                        .enumerate()
-                        .map(|(index, zone)| {
-                            StandardItem {
-                                label: format!("{} {}", index + 1, zone.name),
-                                icon_name: "snap-orthogonal".into(),
-                                activate: Box::new(move |this: &mut Self| {
-                                    let _ = this.sender.send(TrayMessage::SnapZone(index));
-                                }),
-                                ..Default::default()
-                            }
-                            .into()
-                        })
-                        .collect(),
-                    ..Default::default()
-                }
-                .into(),
-            );
-        }
-
-        items.extend([
-            MenuItem::Separator,
-            StandardItem {
-                label: "Previous Zone".into(),
-                icon_name: "go-previous".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::PreviousZone);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Next Zone".into(),
-                icon_name: "go-next".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::NextZone);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: "Install or Upgrade KWin Script".into(),
-                icon_name: "run-install".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::Sync);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Reload KWin".into(),
-                icon_name: "view-refresh".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::ReloadKwin);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Reload Settings".into(),
-                icon_name: "document-revert".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::ReloadSettings);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Open Settings JSON".into(),
-                icon_name: "document-edit".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::OpenSettings);
-                }),
-                ..Default::default()
-            }
-            .into(),
-            MenuItem::Separator,
-            StandardItem {
-                label: self.status.clone(),
-                enabled: false,
-                icon_name: "dialog-information".into(),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "Quit".into(),
-                icon_name: "application-exit".into(),
-                activate: Box::new(|this: &mut Self| {
-                    let _ = this.sender.send(TrayMessage::Quit);
-                }),
-                ..Default::default()
-            }
-            .into(),
-        ]);
-
-        items
+        Vec::new()
     }
 }
