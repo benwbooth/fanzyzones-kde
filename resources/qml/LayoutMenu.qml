@@ -223,16 +223,25 @@ Window {
         return indexes;
     }
 
-    function emitAction(action) {
-        actionEmitted = true;
-        deactivateCloseTimer.stop();
+    function emitAction(action, closeAfter) {
+        const shouldClose = closeAfter !== false || !hostMode;
+        if (shouldClose) {
+            actionEmitted = true;
+            deactivateCloseTimer.stop();
+        } else {
+            action.closeMenu = false;
+        }
         const payload = JSON.stringify(action);
-        if (!postPayload(payload))
+        const posted = postPayload(payload);
+        if (!posted)
             print(actionPrefix + payload);
+        if (!shouldClose)
+            return posted;
         if (hostMode)
             closeMenu(false);
         else
             Qt.quit();
+        return posted;
     }
 
     function postPayload(payload) {
@@ -337,15 +346,18 @@ Window {
         if (command.settings !== undefined)
             settings = command.settings;
         activeLayout = activeLayoutFromSettings(settings);
-        integrationStatus = command.status !== undefined ? command.status : "KWin integration ready";
+        if (command.status !== undefined)
+            integrationStatus = command.status;
         debugPlacement = !!command.debugPlacement;
         if (!command.visible) {
             closeMenu(false);
             return;
         }
 
-        anchor = command.anchor !== undefined ? command.anchor : invalidAnchor();
-        placementAnchor = normalizeAnchor(anchor);
+        if (command.anchor !== undefined) {
+            anchor = command.anchor;
+            placementAnchor = normalizeAnchor(anchor);
+        }
         actionEmitted = false;
         closeOnDeactivate = false;
         menuVisible = true;
@@ -507,7 +519,8 @@ Window {
                         accent: root.accent
 
                         onSetActive: function(index) {
-                            root.emitAction({"action": "setLayout", "layout": index});
+                            if (root.emitAction({"action": "setLayout", "layout": index}, false))
+                                root.activeLayout = index;
                         }
 
                         onSnapZone: function(index, zone) {

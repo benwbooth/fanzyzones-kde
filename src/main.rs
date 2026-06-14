@@ -293,32 +293,73 @@ async fn run_tray() -> Result<()> {
                         if token != menu.token {
                             continue;
                         }
-                        menu_open = false;
                         let menu_status = handle_visual_menu_payload(&payload, &controller).await;
-                        let should_quit = matches!(menu_status, Ok(HandleOutcome::Quit));
+                        let should_quit = menu_status
+                            .as_ref()
+                            .map(|result| matches!(&result.outcome, HandleOutcome::Quit))
+                            .unwrap_or(false);
+                        let should_close_menu = menu_status
+                            .as_ref()
+                            .map(|result| {
+                                result.close_menu || matches!(&result.outcome, HandleOutcome::Quit)
+                            })
+                            .unwrap_or(true);
                         if let Some(menu) = running_menu.as_ref() {
                             menu_sequence += 1;
-                            match &menu_status {
-                                Ok(HandleOutcome::Settings(settings)) => {
+                            match (&menu_status, should_close_menu) {
+                                (Ok(result), false) => {
+                                    if let HandleOutcome::Settings(settings) = &result.outcome {
+                                        let _ = write_visual_menu_update_command(
+                                            menu,
+                                            menu_sequence,
+                                            settings,
+                                        );
+                                    }
+                                }
+                                (Ok(result), true) => {
+                                    menu_open = false;
+                                    if let HandleOutcome::Settings(settings) = &result.outcome {
+                                        let _ = write_visual_menu_close_command(
+                                            menu,
+                                            menu_sequence,
+                                            Some(settings),
+                                        );
+                                    } else {
+                                        let _ =
+                                            write_visual_menu_close_command(menu, menu_sequence, None);
+                                    }
+                                }
+                                (Err(_), _) => {
+                                    menu_open = false;
                                     let _ = write_visual_menu_close_command(
                                         menu,
                                         menu_sequence,
-                                        Some(settings),
+                                        None,
                                     );
-                                }
-                                _ => {
-                                    let _ =
-                                        write_visual_menu_close_command(menu, menu_sequence, None);
                                 }
                             }
                         }
+                        if !should_close_menu {
+                            menu_open = true;
+                        }
                         let _ = handle
                             .update(|tray: &mut FanzyTray| match menu_status {
-                                Ok(HandleOutcome::Settings(settings)) => {
+                                Ok(VisualMenuActionResult {
+                                    outcome: HandleOutcome::Settings(settings),
+                                    close_menu,
+                                }) => {
+                                    let status = if close_menu {
+                                        "FanzyZones menu closed".into()
+                                    } else {
+                                        format!("Active layout: {}", settings.active_layout_name())
+                                    };
                                     tray.settings = settings;
-                                    tray.status = "FanzyZones menu closed".into();
+                                    tray.status = status;
                                 }
-                                Ok(HandleOutcome::Quit) => {
+                                Ok(VisualMenuActionResult {
+                                    outcome: HandleOutcome::Quit,
+                                    ..
+                                }) => {
                                     tray.status = "Quitting...".into();
                                 }
                                 Err(err) => {
@@ -451,6 +492,18 @@ enum VisualMenuAction {
     ReloadKwin,
     About,
     Quit,
+}
+
+#[derive(Debug)]
+struct VisualMenuActionRequest {
+    action: VisualMenuAction,
+    close_menu: bool,
+}
+
+#[derive(Debug)]
+struct VisualMenuActionResult {
+    outcome: HandleOutcome,
+    close_menu: bool,
 }
 
 #[derive(Debug)]
@@ -634,6 +687,24 @@ fn write_visual_menu_close_command(
     )
 }
 
+fn write_visual_menu_update_command(
+    menu: &RunningVisualMenu,
+    sequence: u64,
+    settings: &Settings,
+) -> Result<()> {
+    write_visual_menu_command_state(
+        menu,
+        &VisualMenuCommandFile {
+            sequence,
+            visible: true,
+            settings: Some(settings),
+            anchor: None,
+            status: None,
+            debug_placement: placement_debug_enabled(),
+        },
+    )
+}
+
 fn write_visual_menu_command_state(
     menu: &RunningVisualMenu,
     command: &VisualMenuCommandFile<'_>,
@@ -804,14 +875,18 @@ async fn handle_visual_menu_output(
 async fn handle_visual_menu_payload(
     payload: &str,
     controller: &KwinController,
-) -> Result<HandleOutcome> {
-    let action = serde_json::from_str(payload)
-        .with_context(|| format!("parse visual menu action {}", payload))?;
+) -> Result<VisualMenuActionResult> {
+    let request = parse_visual_menu_payload(payload)?;
     let mut settings = load_and_save_settings()?;
-    if handle_visual_menu_action(action, controller, &mut settings).await? {
-        return Ok(HandleOutcome::Quit);
-    }
-    Ok(HandleOutcome::Settings(settings))
+    let outcome = if handle_visual_menu_action(request.action, controller, &mut settings).await? {
+        HandleOutcome::Quit
+    } else {
+        HandleOutcome::Settings(settings)
+    };
+    Ok(VisualMenuActionResult {
+        outcome,
+        close_menu: request.close_menu,
+    })
 }
 
 fn visual_menu_command(
@@ -1008,12 +1083,22 @@ fn parse_visual_menu_action(stdout: &str, stderr: &str) -> Result<Option<VisualM
     for line in stdout.lines().chain(stderr.lines()) {
         if let Some(offset) = line.find(PREFIX) {
             let payload = &line[offset + PREFIX.len()..];
-            return serde_json::from_str(payload)
-                .map(Some)
-                .with_context(|| format!("parse visual menu action {}", payload));
+            return parse_visual_menu_payload(payload).map(|request| Some(request.action));
         }
     }
     Ok(None)
+}
+
+fn parse_visual_menu_payload(payload: &str) -> Result<VisualMenuActionRequest> {
+    let value: serde_json::Value = serde_json::from_str(payload)
+        .with_context(|| format!("parse visual menu action {}", payload))?;
+    let close_menu = value
+        .get("closeMenu")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true);
+    let action = serde_json::from_value(value)
+        .with_context(|| format!("decode visual menu action {}", payload))?;
+    Ok(VisualMenuActionRequest { action, close_menu })
 }
 
 fn ensure_layout_exists(settings: &Settings, layout: usize) -> Result<()> {
@@ -1204,6 +1289,27 @@ mod tests {
             }
             other => panic!("unexpected action {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_visual_menu_payload_close_menu_flag() {
+        let request = parse_visual_menu_payload(
+            "{\"action\":\"setLayout\",\"layout\":3,\"closeMenu\":false}",
+        )
+        .unwrap();
+
+        assert!(!request.close_menu);
+        match request.action {
+            VisualMenuAction::SetLayout { layout } => assert_eq!(layout, 3),
+            other => panic!("unexpected action {other:?}"),
+        }
+    }
+
+    #[test]
+    fn visual_menu_payload_closes_by_default() {
+        let request = parse_visual_menu_payload("{\"action\":\"setLayout\",\"layout\":1}").unwrap();
+
+        assert!(request.close_menu);
     }
 
     #[test]
