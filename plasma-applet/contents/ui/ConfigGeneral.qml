@@ -5,50 +5,56 @@ import QtQuick.Dialogs as QtDialogs
 
 import org.kde.kcmutils as KCM
 import org.kde.kirigami as Kirigami
-import org.kde.plasma.workspace.dbus as DBus
+import org.kde.plasma.plasma5support as P5Support
 
 KCM.SimpleKCM {
     id: page
 
-    readonly property string dbusService: "com.benwbooth.FanzyZones"
-    readonly property string dbusPath: "/com/benwbooth/FanzyZones"
-    readonly property string dbusInterface: "com.benwbooth.FanzyZones"
+    readonly property string cli: "$HOME/.local/share/fanzyzones-kde/fanzyzones-kde"
 
     property var settings: ({})
-    // Suppress change handlers while we populate controls from the daemon.
+    // Suppress change handlers while we populate controls from the CLI.
     property bool loading: true
+    property int cliNonce: 0
+    property var executableCallbacks: ({})
 
     Component.onCompleted: loadState()
 
-    function backendCall(member, args, signature, onSuccess) {
-        const pending = DBus.SessionBus.asyncCall({
-            "service": dbusService,
-            "path": dbusPath,
-            "iface": dbusInterface,
-            "member": member,
-            "arguments": args || [],
-            "signature": signature || "()"
-        });
-        pending.finished.connect(function() {
-            if (pending.isError)
-                return;
-            const values = pending.values || [];
-            const stateJson = values.length > 0 ? values[0] : pending.value;
-            try {
-                const state = JSON.parse(String(stateJson));
-                if (state.settings !== undefined && onSuccess)
-                    onSuccess(state.settings);
-            } catch (error) {
-                // ignore malformed state
-            }
-        });
+    P5Support.DataSource {
+        id: executable
+        engine: "executable"
+        connectedSources: []
+        onNewData: (source, data) => {
+            const cb = page.executableCallbacks[source];
+            delete page.executableCallbacks[source];
+            executable.disconnectSource(source);
+            if (cb)
+                cb((data["stdout"] || "").trim());
+        }
+    }
+
+    function shellQuote(text) {
+        return "'" + String(text).replace(/'/g, "'\\''") + "'";
+    }
+
+    function runCli(commandSuffix, onResult) {
+        const source = page.cli + " " + commandSuffix + " #" + (page.cliNonce++);
+        page.executableCallbacks[source] = onResult || function() {};
+        executable.connectSource(source);
     }
 
     function loadState() {
         loading = true;
-        backendCall("State", [], "()", function(s) {
-            page.settings = s;
-            page.applyToControls(s);
+        runCli("state-json", function(out) {
+            try {
+                const state = JSON.parse(out);
+                if (state.settings !== undefined) {
+                    page.settings = state.settings;
+                    page.applyToControls(state.settings);
+                }
+            } catch (error) {
+                // ignore malformed state
+            }
             loading = false;
         });
     }
@@ -74,12 +80,11 @@ KCM.SimpleKCM {
     function pushPatch(patch) {
         if (loading)
             return;
-        backendCall(
-            "InvokeAction",
-            [JSON.stringify({"action": "updateSettings", "patch": patch, "closeMenu": false})],
-            "(s)",
-            function(s) { page.settings = s; }
-        );
+        runCli("invoke-action " + shellQuote(JSON.stringify({
+            "action": "updateSettings",
+            "patch": patch,
+            "closeMenu": false
+        })), null);
     }
 
     function currentModifiers() {

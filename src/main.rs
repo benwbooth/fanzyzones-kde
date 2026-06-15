@@ -19,7 +19,6 @@ use std::process::ExitStatus;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::process::Command as ProcessCommand;
-use tokio::sync::Mutex;
 
 const FANZY_DBUS_SERVICE: &str = "com.benwbooth.FanzyZones";
 const FANZY_DBUS_PATH: &str = "/com/benwbooth/FanzyZones";
@@ -35,8 +34,6 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum CliCommand {
-    /// Run the DBus backend used by the Plasma applet.
-    Daemon,
     /// Run the KDE tray app.
     Tray,
     /// Open the FanzyZones visual layout menu.
@@ -108,9 +105,14 @@ fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    match args.command.unwrap_or(CliCommand::Daemon) {
-        CliCommand::Tray => run_tray(),
-        command => run_cli(command),
+    match args.command {
+        Some(CliCommand::Tray) => run_tray(),
+        Some(command) => run_cli(command),
+        None => {
+            use clap::CommandFactory;
+            Args::command().print_help().ok();
+            Ok(())
+        }
     }
 }
 
@@ -125,7 +127,6 @@ fn run_cli(command: CliCommand) -> Result<()> {
 async fn run_cli_async(command: CliCommand) -> Result<()> {
     match command {
         CliCommand::Tray => unreachable!("tray is handled by the Qt event loop"),
-        CliCommand::Daemon => run_dbus_daemon().await,
         CliCommand::VisualMenu => {
             let controller = KwinController::from_environment()?;
             match run_visual_menu_blocking(&controller, None, "KWin integration ready").await? {
@@ -238,66 +239,6 @@ async fn run_cli_async(command: CliCommand) -> Result<()> {
     }
 }
 
-struct FanzyDbusService {
-    setup_completed: Mutex<bool>,
-}
-
-impl FanzyDbusService {
-    fn new() -> Self {
-        Self {
-            setup_completed: Mutex::new(false),
-        }
-    }
-}
-
-#[zbus::interface(name = "com.benwbooth.FanzyZones")]
-impl FanzyDbusService {
-    #[zbus(name = "State")]
-    async fn state(&self) -> zbus::fdo::Result<String> {
-        let mut setup_completed = self.setup_completed.lock().await;
-        let run_setup = !*setup_completed;
-        let state = applet_state_json(run_setup).await.map_err(fdo_error)?;
-        if run_setup {
-            *setup_completed = true;
-        }
-        Ok(state)
-    }
-
-    #[zbus(name = "Refresh")]
-    async fn refresh(&self) -> zbus::fdo::Result<String> {
-        let state = applet_state_json(true).await.map_err(fdo_error)?;
-        *self.setup_completed.lock().await = true;
-        Ok(state)
-    }
-
-    #[zbus(name = "InvokeAction")]
-    async fn invoke_action(&self, payload: &str) -> zbus::fdo::Result<String> {
-        invoke_action_payload(payload).await.map_err(fdo_error)
-    }
-}
-
-fn fdo_error(err: anyhow::Error) -> zbus::fdo::Error {
-    zbus::fdo::Error::Failed(format!("{err:#}"))
-}
-
-async fn run_dbus_daemon() -> Result<()> {
-    tracing::info!("starting FanzyZones DBus backend");
-    let connection = zbus::connection::Builder::session()
-        .context("create FanzyZones DBus session builder")?
-        .serve_at(FANZY_DBUS_PATH, FanzyDbusService::new())
-        .context("serve FanzyZones DBus object")?
-        .name(FANZY_DBUS_SERVICE)
-        .context("request FanzyZones DBus service name")?
-        .build()
-        .await
-        .context("connect FanzyZones DBus backend")?;
-
-    let _ = &connection;
-    std::future::pending::<()>().await;
-    #[allow(unreachable_code)]
-    Ok(())
-}
-
 fn run_tray() -> Result<()> {
     configure_qt_platform_environment();
     cxx_qt::init_crate!(fanzyzones_kde);
@@ -404,12 +345,60 @@ fn current_applet_state_json(status: impl Into<String>) -> Result<String> {
 
 async fn install_plasma_integration() -> Result<()> {
     install_icon_theme()?;
-    install_dbus_activation_service()?;
-    reload_dbus_activation_config().await;
-    install_systemd_user_service().await?;
+    install_cli_wrapper()?;
+    remove_daemon_service().await;
     install_plasmoid_package().await?;
     install_system_tray_item().await?;
     Ok(())
+}
+
+/// Install a small wrapper that runs the fanzyzones-kde CLI with the right
+/// environment. The Plasma applet shells out to this for its actions, so no
+/// background daemon is needed.
+fn install_cli_wrapper() -> Result<PathBuf> {
+    let wrapper_dir = xdg_data_home()?.join("fanzyzones-kde");
+    fs::create_dir_all(&wrapper_dir)
+        .with_context(|| format!("create {}", wrapper_dir.display()))?;
+    let wrapper = wrapper_dir.join("fanzyzones-kde");
+    let exe = env::current_exe().context("resolve current fanzyzones-kde executable")?;
+    let mut script = String::from("#!/bin/sh\n");
+    for (key, value) in activation_environment()? {
+        script.push_str("export ");
+        script.push_str(key);
+        script.push('=');
+        script.push_str(&shell_quote(&value.to_string_lossy()));
+        script.push('\n');
+    }
+    script.push_str("exec ");
+    script.push_str(&shell_quote(&exe.to_string_lossy()));
+    script.push_str(" \"$@\"\n");
+    fs::write(&wrapper, script).with_context(|| format!("write {}", wrapper.display()))?;
+    let mut permissions = fs::metadata(&wrapper)
+        .with_context(|| format!("stat {}", wrapper.display()))?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&wrapper, permissions)
+        .with_context(|| format!("mark {} executable", wrapper.display()))?;
+    Ok(wrapper)
+}
+
+/// Remove the legacy background daemon: stop/disable the user service and delete
+/// its unit, DBus activation file, and wrapper.
+async fn remove_daemon_service() {
+    let _ = run_process("systemctl", &["--user", "stop", "fanzyzones-kde.service"]).await;
+    let _ = run_process("systemctl", &["--user", "disable", "fanzyzones-kde.service"]).await;
+    if let Ok(data_home) = xdg_data_home() {
+        let _ = fs::remove_file(
+            data_home
+                .join("dbus-1/services")
+                .join(format!("{FANZY_DBUS_SERVICE}.service")),
+        );
+        let _ = fs::remove_file(data_home.join("fanzyzones-kde/fanzyzones-kde-dbus-service"));
+    }
+    if let Ok(config_home) = xdg_config_home() {
+        let _ = fs::remove_file(config_home.join("systemd/user/fanzyzones-kde.service"));
+    }
+    let _ = run_process("systemctl", &["--user", "daemon-reload"]).await;
 }
 
 fn install_icon_theme() -> Result<()> {
@@ -424,107 +413,6 @@ fn install_icon_theme() -> Result<()> {
             target.display()
         )
     })?;
-    Ok(())
-}
-
-fn install_dbus_activation_service() -> Result<()> {
-    let data_home = xdg_data_home()?;
-    let service_dir = data_home.join("dbus-1/services");
-    let wrapper_dir = data_home.join("fanzyzones-kde");
-    fs::create_dir_all(&service_dir)
-        .with_context(|| format!("create {}", service_dir.display()))?;
-    fs::create_dir_all(&wrapper_dir)
-        .with_context(|| format!("create {}", wrapper_dir.display()))?;
-
-    let wrapper = wrapper_dir.join("fanzyzones-kde-dbus-service");
-    let exe = env::current_exe().context("resolve current fanzyzones-kde executable")?;
-    let mut script = String::from("#!/bin/sh\n");
-    for (key, value) in activation_environment()? {
-        script.push_str("export ");
-        script.push_str(key);
-        script.push('=');
-        script.push_str(&shell_quote(&value.to_string_lossy()));
-        script.push('\n');
-    }
-    script.push_str("exec ");
-    script.push_str(&shell_quote(&exe.to_string_lossy()));
-    script.push_str(" daemon \"$@\"\n");
-
-    fs::write(&wrapper, script).with_context(|| format!("write {}", wrapper.display()))?;
-    let mut permissions = fs::metadata(&wrapper)
-        .with_context(|| format!("stat {}", wrapper.display()))?
-        .permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&wrapper, permissions)
-        .with_context(|| format!("mark {} executable", wrapper.display()))?;
-
-    let service_path = service_dir.join(format!("{FANZY_DBUS_SERVICE}.service"));
-    let service = format!(
-        "[D-BUS Service]\nName={FANZY_DBUS_SERVICE}\nExec={}\nSystemdService=fanzyzones-kde.service\n",
-        wrapper.display()
-    );
-    fs::write(&service_path, service)
-        .with_context(|| format!("write {}", service_path.display()))?;
-    Ok(())
-}
-
-async fn reload_dbus_activation_config() {
-    let _ = run_process(
-        "busctl",
-        &[
-            "--user",
-            "call",
-            "org.freedesktop.DBus",
-            "/org/freedesktop/DBus",
-            "org.freedesktop.DBus",
-            "ReloadConfig",
-        ],
-    )
-    .await;
-}
-
-async fn install_systemd_user_service() -> Result<()> {
-    if run_process("systemctl", &["--user", "--version"])
-        .await
-        .is_err()
-    {
-        return Ok(());
-    }
-
-    let config_home = xdg_config_home()?;
-    let service_dir = config_home.join("systemd/user");
-    fs::create_dir_all(&service_dir)
-        .with_context(|| format!("create {}", service_dir.display()))?;
-
-    let wrapper = xdg_data_home()?.join("fanzyzones-kde/fanzyzones-kde-dbus-service");
-    let service_path = service_dir.join("fanzyzones-kde.service");
-    let service = format!(
-        "[Unit]\n\
-         Description=FanzyZones KDE DBus backend\n\
-         PartOf=graphical-session.target\n\
-         After=graphical-session.target\n\
-         \n\
-         [Service]\n\
-         Type=dbus\n\
-         BusName={FANZY_DBUS_SERVICE}\n\
-         ExecStart={}\n\
-         Restart=on-failure\n\
-         RestartSec=1\n\
-         \n\
-         [Install]\n\
-         WantedBy=default.target\n",
-        wrapper.display()
-    );
-    fs::write(&service_path, service)
-        .with_context(|| format!("write {}", service_path.display()))?;
-
-    run_process("systemctl", &["--user", "daemon-reload"]).await?;
-    run_process("systemctl", &["--user", "enable", "fanzyzones-kde.service"]).await?;
-    run_process(
-        "systemctl",
-        &["--user", "restart", "fanzyzones-kde.service"],
-    )
-    .await?;
     Ok(())
 }
 

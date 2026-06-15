@@ -5,19 +5,19 @@ import QtQuick.Window
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasmoid
-import org.kde.plasma.workspace.dbus as DBus
+import org.kde.plasma.plasma5support as P5Support
 
 PlasmoidItem {
     id: main
 
-    readonly property string dbusService: "com.benwbooth.FanzyZones"
-    readonly property string dbusPath: "/com/benwbooth/FanzyZones"
-    readonly property string dbusInterface: "com.benwbooth.FanzyZones"
+    // The daemon is gone: the applet runs the fanzyzones-kde CLI on demand.
+    readonly property string cli: "$HOME/.local/share/fanzyzones-kde/fanzyzones-kde"
 
     property var settings: ({ "active_layout": 0, "layouts": [] })
     property int activeLayout: activeLayoutFromSettings(settings)
     property string integrationStatus: "Starting FanzyZones..."
-    property var pendingCalls: []
+    property int cliNonce: 0
+    property var executableCallbacks: ({})
 
     switchWidth: Kirigami.Units.gridUnit * 18
     switchHeight: Kirigami.Units.gridUnit * 26
@@ -52,47 +52,50 @@ PlasmoidItem {
             integrationStatus = state.status;
     }
 
-    function backendCall(member, args, signature, onSuccess) {
-        const pending = DBus.SessionBus.asyncCall({
-            "service": dbusService,
-            "path": dbusPath,
-            "iface": dbusInterface,
-            "member": member,
-            "arguments": args || [],
-            "signature": signature || "()"
-        });
-        pendingCalls.push(pending);
-        pending.finished.connect(function() {
-            const index = pendingCalls.indexOf(pending);
-            if (index >= 0)
-                pendingCalls.splice(index, 1);
+    P5Support.DataSource {
+        id: executable
+        engine: "executable"
+        connectedSources: []
+        onNewData: (source, data) => {
+            const cb = main.executableCallbacks[source];
+            delete main.executableCallbacks[source];
+            executable.disconnectSource(source);
+            if (cb)
+                cb((data["stdout"] || "").trim());
+        }
+    }
 
-            if (pending.isError) {
-                integrationStatus = "Error: " + pending.error.message;
-                return;
-            }
+    function shellQuote(text) {
+        return "'" + String(text).replace(/'/g, "'\\''") + "'";
+    }
 
-            const values = pending.values || [];
-            const stateJson = values.length > 0 ? values[0] : pending.value;
+    function runCli(commandSuffix, onResult) {
+        // Unique trailing shell comment so identical commands map to distinct sources.
+        const source = main.cli + " " + commandSuffix + " #" + (main.cliNonce++);
+        main.executableCallbacks[source] = onResult || function() {};
+        executable.connectSource(source);
+    }
+
+    function refreshState() {
+        runCli("state-json", function(out) {
             try {
-                applyStateJson(String(stateJson));
-                if (onSuccess)
-                    onSuccess();
+                applyStateJson(out);
             } catch (error) {
                 integrationStatus = "Error: " + error;
             }
         });
     }
 
-    function refreshState() {
-        backendCall("State", [], "()", null);
-    }
-
     function invokeAction(action, closeAfter) {
         const shouldClose = closeAfter !== false;
         if (!shouldClose)
             action.closeMenu = false;
-        backendCall("InvokeAction", [JSON.stringify(action)], "(s)", function() {
+        runCli("invoke-action " + shellQuote(JSON.stringify(action)), function(out) {
+            try {
+                applyStateJson(out);
+            } catch (error) {
+                // keep prior state on parse failure
+            }
             if (shouldClose)
                 main.closeMenu();
         });

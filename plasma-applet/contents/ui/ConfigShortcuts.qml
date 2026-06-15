@@ -4,53 +4,55 @@ import QtQuick.Layouts
 import org.kde.kcmutils as KCM
 import org.kde.kirigami as Kirigami
 import org.kde.kquickcontrols as KQC
-import org.kde.plasma.workspace.dbus as DBus
+import org.kde.plasma.plasma5support as P5Support
 
 KCM.SimpleKCM {
     id: page
 
-    readonly property string dbusService: "com.benwbooth.FanzyZones"
-    readonly property string dbusPath: "/com/benwbooth/FanzyZones"
-    readonly property string dbusInterface: "com.benwbooth.FanzyZones"
+    readonly property string cli: "$HOME/.local/share/fanzyzones-kde/fanzyzones-kde"
 
     // [{ id, friendly, sequence }]
     property var shortcuts: []
+    property int cliNonce: 0
+    property var executableCallbacks: ({})
 
     Component.onCompleted: loadShortcuts()
 
-    function backendCall(member, args, signature, onResult) {
-        const pending = DBus.SessionBus.asyncCall({
-            "service": dbusService,
-            "path": dbusPath,
-            "iface": dbusInterface,
-            "member": member,
-            "arguments": args || [],
-            "signature": signature || "()"
-        });
-        pending.finished.connect(function() {
-            if (pending.isError)
-                return;
-            const values = pending.values || [];
-            const json = values.length > 0 ? values[0] : pending.value;
-            if (onResult) {
-                try {
-                    onResult(JSON.parse(String(json)));
-                } catch (error) {
-                    // ignore malformed reply
-                }
+    P5Support.DataSource {
+        id: executable
+        engine: "executable"
+        connectedSources: []
+        onNewData: (source, data) => {
+            const cb = page.executableCallbacks[source];
+            delete page.executableCallbacks[source];
+            executable.disconnectSource(source);
+            if (cb)
+                cb((data["stdout"] || "").trim());
+        }
+    }
+
+    function shellQuote(text) {
+        return "'" + String(text).replace(/'/g, "'\\''") + "'";
+    }
+
+    function runCli(commandSuffix, onResult) {
+        const source = page.cli + " " + commandSuffix + " #" + (page.cliNonce++);
+        page.executableCallbacks[source] = onResult || function() {};
+        executable.connectSource(source);
+    }
+
+    function loadShortcuts() {
+        runCli("shortcuts", function(out) {
+            try {
+                page.shortcuts = JSON.parse(out);
+            } catch (error) {
+                // ignore malformed reply
             }
         });
     }
 
-    function loadShortcuts() {
-        backendCall("Shortcuts", [], "()", function(list) {
-            page.shortcuts = list;
-        });
-    }
-
     function setShortcut(id, sequence) {
-        // Fire-and-forget; the KeySequenceItem already shows the new value.
-        backendCall("SetShortcut", [id, sequence], "(ss)", null);
+        runCli("set-shortcut " + shellQuote(id) + " " + shellQuote(sequence), null);
     }
 
     Kirigami.FormLayout {
