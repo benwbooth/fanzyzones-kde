@@ -1,15 +1,16 @@
 # FanzyZones KDE
 
 FanzyZones KDE is a KDE Plasma version of FanzyZones: a FancyZones-style window
-layout tool with a tray controller and a bundled KWin script. The Rust tray app
-owns installation, settings, layout selection, and KWin reloads. The KWin script
-owns live window movement, drag overlays, keyboard shortcuts, virtual desktops,
-and maximize/fullscreen handling.
+layout tool with a Plasma system-tray applet and a bundled KWin script. The Rust
+backend owns installation, settings, layout selection, and KWin reloads. The KWin
+script owns live window movement, drag overlays, keyboard shortcuts, virtual
+desktops, and maximize/fullscreen handling.
 
 ## Status
 
 This is an initial working project scaffold with real Rust code, an installable
-Plasma 6 KWin package, shared JSON settings, and tests for layout/config logic.
+Plasma 6 applet, an installable KWin package, shared JSON settings, and tests for
+layout/config logic.
 
 ## FanzyZones Parity
 
@@ -21,11 +22,13 @@ Plasma 6 KWin package, shared JSON settings, and tests for layout/config logic.
   - Quarters
   - Priority (Left Focus)
   - Grid 3x3
-- Tray icon with an original-style visual layout menu: click a layout name to
+- Plasma tray icon with an original-style visual layout menu: click a layout name to
   activate it, or click a pane in its mini diagram to move the focused window
   there.
-- First-run tray setup that idempotently installs or upgrades the bundled KWin
-  script, writes settings, enables it, and asks KWin to reconfigure.
+- Idempotent setup that installs or upgrades the Plasma applet, registers the
+  Rust DBus backend with a user systemd service/session-bus activation hook,
+  installs or upgrades the bundled KWin script, writes settings, enables it, and
+  asks KWin to reconfigure.
 - Focused-window snapping to zone 1 through 9.
 - Focused-window previous/next zone cycling.
 - Drag-to-snap with overlay.
@@ -60,14 +63,17 @@ cargo run -- install --reload
 ```
 
 The dev shell provides Rust plus KDE/Qt command-line tools such as
-`kpackagetool6`, `kwriteconfig6`, and `qdbus6`.
+`kpackagetool6`, `kwriteconfig6`, and `busctl`.
 
 ## Commands
 
 ```sh
-fanzyzones-kde tray
+fanzyzones-kde daemon
 fanzyzones-kde visual-menu
 fanzyzones-kde install --reload
+fanzyzones-kde install-plasmoid
+fanzyzones-kde state-json --sync
+fanzyzones-kde invoke-action '{"action":"setLayout","layout":0,"closeMenu":false}'
 fanzyzones-kde write-config
 fanzyzones-kde reload-kwin
 fanzyzones-kde print-config
@@ -78,11 +84,13 @@ fanzyzones-kde import-config ./settings.json --sync
 fanzyzones-kde disable
 ```
 
-Running `fanzyzones-kde tray` is enough for normal use; the tray app performs
-the same setup work as `fanzyzones-kde install --reload` on startup and reports
-setup errors in the tray menu.
+Running `fanzyzones-kde install --reload` is enough for normal use. It installs
+the applet into Plasma, adds it to the system tray config, writes DBus and user
+systemd activation for `fanzyzones-kde daemon`, refreshes the session-bus
+activation cache, starts the backend service, and syncs the KWin script.
 
-Left-clicking or right-clicking the tray icon opens the visual FanzyZones menu.
+The applet opens as Plasma's native tray popup. It uses DBus to talk to the Rust
+backend; there is no HTTP service and no authored C++ in this repository.
 
 ## Layout JSON
 

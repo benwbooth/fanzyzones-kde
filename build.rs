@@ -12,11 +12,10 @@ fn main() {
     configure_split_nix_qt_tools();
 
     CxxQtBuilder::new_qml_module(QmlModule::new("FanzyZones"))
+        .qt_module("Gui")
         .qt_module("Network")
         .qt_module("Quick")
-        .qt_module("Widgets")
-        .files(["src/backend.rs", "src/qt_app.rs"])
-        .cpp_file("src/qt_app.cpp")
+        .files(["src/backend.rs"])
         .build();
 }
 
@@ -37,6 +36,24 @@ fn configure_split_nix_qt_tools() {
     let Some(base_libexec) = query_qmake_libexec(&real_qmake) else {
         return;
     };
+    let Some(base_headers) = query_qmake_path(
+        &real_qmake,
+        &[
+            "QT_INSTALL_HEADERS/get",
+            "QT_INSTALL_HEADERS",
+            "QT_HOST_HEADERS/get",
+            "QT_HOST_HEADERS",
+        ],
+    ) else {
+        return;
+    };
+    let Some(declarative_headers) = declarative_libexec
+        .parent()
+        .map(|path| path.join("include"))
+        .filter(|path| path.exists())
+    else {
+        return;
+    };
     let Some(out_dir) = env::var_os("OUT_DIR").map(PathBuf::from) else {
         return;
     };
@@ -50,10 +67,18 @@ fn configure_split_nix_qt_tools() {
     link_tool(&combined_libexec, &declarative_libexec, "qmlcachegen");
     link_tool(&combined_libexec, &declarative_libexec, "qmltyperegistrar");
 
+    let combined_headers = out_dir.join("fanzyzones-qt-include");
+    if fs::create_dir_all(&combined_headers).is_err() {
+        return;
+    }
+    link_directory_entries(&combined_headers, &base_headers);
+    link_directory_entries(&combined_headers, &declarative_headers);
+
     let qmake_wrapper = out_dir.join("fanzyzones-qmake");
     let script = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"-query\" ]; then\n  case \"$2\" in\n    QT_HOST_LIBEXECS|get|QT_HOST_LIBEXECS/get|QT_INSTALL_LIBEXECS|QT_INSTALL_LIBEXECS/get)\n      printf '%s\\n' {}\n      exit 0\n      ;;\n  esac\nfi\nexec {} \"$@\"\n",
+        "#!/bin/sh\nif [ \"$1\" = \"-query\" ]; then\n  case \"$2\" in\n    QT_HOST_LIBEXECS|get|QT_HOST_LIBEXECS/get|QT_INSTALL_LIBEXECS|QT_INSTALL_LIBEXECS/get)\n      printf '%s\\n' {}\n      exit 0\n      ;;\n    QT_INSTALL_HEADERS|get|QT_INSTALL_HEADERS/get|QT_HOST_HEADERS|QT_HOST_HEADERS/get)\n      printf '%s\\n' {}\n      exit 0\n      ;;\n  esac\nfi\nexec {} \"$@\"\n",
         shell_quote(&combined_libexec),
+        shell_quote(&combined_headers),
         shell_quote(&real_qmake),
     );
     if fs::write(&qmake_wrapper, script).is_ok() {
@@ -88,23 +113,55 @@ fn find_on_path(binary: &str) -> Option<PathBuf> {
 }
 
 fn query_qmake_libexec(qmake: &Path) -> Option<PathBuf> {
-    [
-        "QT_HOST_LIBEXECS/get",
-        "QT_HOST_LIBEXECS",
-        "QT_INSTALL_LIBEXECS/get",
-        "QT_INSTALL_LIBEXECS",
-    ]
-    .into_iter()
-    .filter_map(|key| {
-        let output = Command::new(qmake).arg("-query").arg(key).output().ok()?;
-        output.status.success().then_some(output)
-    })
-    .filter_map(|output| {
-        let value = String::from_utf8(output.stdout).ok()?;
-        let path = PathBuf::from(value.trim());
-        path.exists().then_some(path)
-    })
-    .find(|path| path.join("moc").exists() || path.join("rcc").exists())
+    query_qmake_path(
+        qmake,
+        &[
+            "QT_HOST_LIBEXECS/get",
+            "QT_HOST_LIBEXECS",
+            "QT_INSTALL_LIBEXECS/get",
+            "QT_INSTALL_LIBEXECS",
+        ],
+    )
+    .filter(|path| path.join("moc").exists() || path.join("rcc").exists())
+}
+
+fn query_qmake_path(qmake: &Path, keys: &[&str]) -> Option<PathBuf> {
+    keys.iter()
+        .filter_map(|key| {
+            let output = Command::new(qmake).arg("-query").arg(key).output().ok()?;
+            output.status.success().then_some(output)
+        })
+        .filter_map(|output| {
+            let value = String::from_utf8(output.stdout).ok()?;
+            let path = PathBuf::from(value.trim());
+            path.exists().then_some(path)
+        })
+        .next()
+}
+
+fn link_directory_entries(target_dir: &Path, source_dir: &Path) {
+    let Ok(entries) = fs::read_dir(source_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let source = entry.path();
+        let target = target_dir.join(entry.file_name());
+        if target.exists() {
+            continue;
+        }
+
+        #[cfg(unix)]
+        if symlink(&source, &target).is_ok() {
+            continue;
+        }
+
+        if source.is_dir() {
+            let _ = fs::create_dir_all(target);
+        } else {
+            let _ = fs::copy(source, target);
+        }
+    }
 }
 
 fn link_tool(combined_libexec: &Path, source_dir: &Path, tool: &str) {

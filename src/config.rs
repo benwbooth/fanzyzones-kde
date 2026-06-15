@@ -49,6 +49,9 @@ pub struct Settings {
     pub modifiers: Vec<ModifierKey>,
     #[serde(default)]
     pub active_layout: usize,
+    /// Layout ids ordered most-recently-used first. Maintained by normalize().
+    #[serde(default)]
+    pub layout_mru: Vec<String>,
     #[serde(default = "default_gap")]
     pub gap: i32,
     #[serde(default = "default_outer_padding")]
@@ -144,6 +147,7 @@ impl Default for Settings {
             snap_mode: SnapMode::Modifier,
             modifiers: default_modifiers(),
             active_layout: 0,
+            layout_mru: Vec::new(),
             gap: default_gap(),
             outer_padding: default_outer_padding(),
             enable_zone_overlay: true,
@@ -177,6 +181,20 @@ impl Settings {
             self.active_layout = 0;
         }
         self.active_layout = clamp_layout_index(self.active_layout, &self.layouts);
+
+        // Maintain most-recently-used layout ordering (ids, most-recent first):
+        // drop ids for layouts that no longer exist, de-duplicate, and promote
+        // the active layout to the front so it is always the most recent.
+        let valid: std::collections::HashSet<&str> =
+            self.layouts.iter().map(|l| l.id.as_str()).collect();
+        self.layout_mru.retain(|id| valid.contains(id.as_str()));
+        let mut seen = std::collections::HashSet::new();
+        self.layout_mru.retain(|id| seen.insert(id.clone()));
+        if let Some(active_id) = self.layouts.get(self.active_layout).map(|l| l.id.clone()) {
+            self.layout_mru.retain(|id| *id != active_id);
+            self.layout_mru.insert(0, active_id);
+        }
+
         self.gap = self.gap.max(0);
         self.outer_padding = self.outer_padding.max(0);
         self.skipped_window_classes

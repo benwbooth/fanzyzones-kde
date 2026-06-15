@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt.labs.platform as Platform
 import QtQuick.Window
 
 Window {
@@ -10,19 +9,18 @@ Window {
     readonly property string actionPrefix: "FANZYZONES_ACTION "
     readonly property int menuMargin: 8
     property var backend: null
-    property string commandUrl: parseArgument("--fanzyzones-command-url", "")
+    property bool embeddedBackendRequested: false
     property string trayIconSource: parseArgument("--fanzyzones-tray-icon-source", "")
-    readonly property bool hostMode: commandUrl.length > 0
     readonly property bool backendMode: backend !== null
-    readonly property bool trayMode: hostMode || backendMode
+    readonly property bool trayMode: backendMode
     property int commandSequence: -1
-    property bool commandReadInFlight: false
-    property bool menuVisible: !trayMode
+    property bool menuVisible: !(trayMode || embeddedBackendRequested)
+    readonly property bool idleMode: trayMode && !menuVisible
     property var settings: parseSettings()
     property var anchor: parseAnchor()
     property var placementAnchor: normalizeAnchor(anchor)
+    property var lastTrayAnchor: invalidAnchor()
     property string integrationStatus: parseStatus()
-    property string actionUrl: parseActionUrl()
     property bool debugPlacement: parseFlag("--fanzyzones-debug-placement")
     property int activeLayout: activeLayoutFromSettings(settings)
     property bool closeOnDeactivate: false
@@ -51,8 +49,7 @@ Window {
     readonly property color hoverTextColor: highlightTextColor
     readonly property color checkedBg: Qt.rgba(highlightBg.r, highlightBg.g, highlightBg.b, darkMode ? 0.22 : 0.12)
     readonly property color dangerColor: "#dc2626"
-    readonly property int menuWindowFlags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
-    readonly property int idleWindowFlags: menuWindowFlags | Qt.WindowTransparentForInput
+    readonly property int menuWindowFlags: Qt.Popup | Qt.FramelessWindowHint
     readonly property real menuWidth: 346
     readonly property real menuHeight: Math.min(
         Math.max(menuColumn.implicitHeight + 18, 220),
@@ -72,15 +69,15 @@ Window {
         colorGroup: SystemPalette.Active
     }
 
-    visible: true
-    opacity: trayMode && !menuVisible ? 0 : 1
-    width: trayMode && !menuVisible ? 1 : screenWidth
-    height: trayMode && !menuVisible ? 1 : screenHeight
-    x: trayMode && !menuVisible ? availableLeft : screenLeft
-    y: trayMode && !menuVisible ? availableTop : screenTop
+    visible: !idleMode
+    opacity: 1
+    width: menuWidth
+    height: menuHeight
+    x: contextMenuX()
+    y: contextMenuY()
     color: "transparent"
     title: "FanzyZones"
-    flags: trayMode && !menuVisible ? idleWindowFlags : menuWindowFlags
+    flags: menuWindowFlags
 
     onActiveChanged: {
         if (!menuVisible || !closeOnDeactivate || actionEmitted)
@@ -89,6 +86,11 @@ Window {
             deactivateCloseTimer.stop();
         else
             deactivateCloseTimer.restart();
+    }
+
+    onVisibleChanged: {
+        if (trayMode && !visible && menuVisible && !actionEmitted)
+            closeMenu(false);
     }
 
     function invalidAnchor() {
@@ -136,10 +138,6 @@ Window {
         return parseArgument("--fanzyzones-status", "KWin integration ready");
     }
 
-    function parseActionUrl() {
-        return parseArgument("--fanzyzones-action-url", "");
-    }
-
     function parseFlag(flag) {
         for (let i = 0; i < Qt.application.arguments.length; i++) {
             if (Qt.application.arguments[i] === flag)
@@ -159,37 +157,112 @@ Window {
         return 1;
     }
 
+    function anchorWithPosition(rawAnchor, x, y, scale, normalized) {
+        return {
+            "valid": rawAnchor.valid,
+            "x": x,
+            "y": y,
+            "width": rawAnchor.width || 0,
+            "height": rawAnchor.height || 0,
+            "source": rawAnchor.source || "",
+            "edge": rawAnchor.edge || "",
+            "scale": scale,
+            "normalized": normalized
+        };
+    }
+
     function normalizeAnchor(rawAnchor) {
         const scale = screenScale();
         if (!rawAnchor.valid || scale <= 1)
-            return {
-                "valid": rawAnchor.valid,
-                "x": rawAnchor.x,
-                "y": rawAnchor.y,
-                "scale": scale,
-                "normalized": false
-            };
+            return anchorWithPosition(rawAnchor, rawAnchor.x, rawAnchor.y, scale, false);
 
         const outsideLogicalScreen = rawAnchor.x > availableRight + menuMargin
             || rawAnchor.y > availableBottom + menuMargin
             || rawAnchor.x < availableLeft - menuMargin
             || rawAnchor.y < availableTop - menuMargin;
         if (!outsideLogicalScreen)
-            return {
-                "valid": true,
-                "x": rawAnchor.x,
-                "y": rawAnchor.y,
-                "scale": scale,
-                "normalized": false
-            };
+            return anchorWithPosition(rawAnchor, rawAnchor.x, rawAnchor.y, scale, false);
+
+        return anchorWithPosition(rawAnchor, rawAnchor.x / scale, rawAnchor.y / scale, scale, true);
+    }
+
+    function nearestPanelEdge(point) {
+        const screenRight = screenLeft + screenWidth;
+        const screenBottom = screenTop + screenHeight;
+        const candidates = [
+            {"edge": "bottom", "thickness": Math.max(0, screenBottom - availableBottom), "distance": Math.abs(point.y - screenBottom)},
+            {"edge": "top", "thickness": Math.max(0, availableTop - screenTop), "distance": Math.abs(point.y - screenTop)},
+            {"edge": "right", "thickness": Math.max(0, screenRight - availableRight), "distance": Math.abs(point.x - screenRight)},
+            {"edge": "left", "thickness": Math.max(0, availableLeft - screenLeft), "distance": Math.abs(point.x - screenLeft)}
+        ];
+
+        let best = candidates[0];
+        for (let i = 1; i < candidates.length; i++) {
+            const candidate = candidates[i];
+            if (candidate.thickness > 0 && (best.thickness <= 0 || candidate.distance < best.distance))
+                best = candidate;
+        }
+        if (best.thickness > 0)
+            return best;
+
+        for (let j = 1; j < candidates.length; j++) {
+            if (candidates[j].distance < best.distance)
+                best = candidates[j];
+        }
+        return best;
+    }
+
+    function trayAnchorFromClick(rawAnchor) {
+        const point = normalizeAnchor(rawAnchor);
+        if (!point.valid)
+            return point;
+
+        const panel = nearestPanelEdge(point);
+        const iconSize = clamp(panel.thickness > 0 ? panel.thickness : 32, 24, 48);
+        let x = point.x;
+        let y = point.y;
+        let width = iconSize;
+        let height = iconSize;
+
+        if (panel.edge === "bottom") {
+            x = clamp(point.x - iconSize / 2, availableLeft, availableRight - iconSize);
+            y = availableBottom;
+            height = Math.max(panel.thickness, iconSize);
+        } else if (panel.edge === "top") {
+            x = clamp(point.x - iconSize / 2, availableLeft, availableRight - iconSize);
+            y = availableTop;
+            height = Math.max(panel.thickness, iconSize);
+        } else if (panel.edge === "right") {
+            x = availableRight;
+            y = clamp(point.y - iconSize / 2, availableTop, availableBottom - iconSize);
+            width = Math.max(panel.thickness, iconSize);
+        } else {
+            x = availableLeft;
+            y = clamp(point.y - iconSize / 2, availableTop, availableBottom - iconSize);
+            width = Math.max(panel.thickness, iconSize);
+        }
 
         return {
             "valid": true,
-            "x": rawAnchor.x / scale,
-            "y": rawAnchor.y / scale,
-            "scale": scale,
-            "normalized": true
+            "x": x,
+            "y": y,
+            "width": width,
+            "height": height,
+            "source": "trayGeometry",
+            "edge": panel.edge,
+            "clickX": point.x,
+            "clickY": point.y,
+            "scale": point.scale,
+            "normalized": point.normalized
         };
+    }
+
+    function placementFromAnchor(rawAnchor) {
+        if (!rawAnchor || !rawAnchor.valid)
+            return invalidAnchor();
+        if (rawAnchor.source === "trayClick")
+            return trayAnchorFromClick(rawAnchor);
+        return normalizeAnchor(rawAnchor);
     }
 
     function contextMenuX() {
@@ -198,8 +271,11 @@ Window {
         if (!placementAnchor.valid)
             return clamp(availableRight - menuWidth - menuMargin, minX, maxX);
 
-        if (placementAnchor.source === "trayGeometry")
+        if (placementAnchor.source === "trayGeometry") {
+            if (placementAnchor.edge === "right")
+                return clamp(placementAnchor.x - menuWidth, minX, maxX);
             return clamp(placementAnchor.x, minX, maxX);
+        }
 
         let proposed = placementAnchor.x;
         if (proposed + menuWidth > availableRight - menuMargin)
@@ -212,6 +288,11 @@ Window {
         const maxY = availableBottom - menuHeight - menuMargin;
         if (!placementAnchor.valid)
             return clamp(availableTop + menuMargin, minY, maxY);
+
+        if (placementAnchor.source === "trayGeometry" && placementAnchor.edge === "bottom")
+            return clamp(placementAnchor.y - menuHeight, minY, maxY);
+        if (placementAnchor.source === "trayGeometry" && placementAnchor.edge === "top")
+            return clamp(placementAnchor.y, minY, maxY);
 
         let proposed = placementAnchor.y;
         if (proposed + menuHeight > availableBottom - menuMargin)
@@ -229,35 +310,27 @@ Window {
         return "Active layout: " + activeLayoutName() + "\n" + integrationStatus;
     }
 
-    function trayAnchor() {
-        const geometry = trayIcon.geometry;
-        if (!geometry
-            || !isFinite(geometry.x)
-            || !isFinite(geometry.y)
-            || geometry.width <= 0
-            || geometry.height <= 0) {
-            return invalidAnchor();
-        }
-
-        const midpointY = geometry.y + geometry.height / 2;
-        const screenMidpointY = availableTop + (availableBottom - availableTop) / 2;
-        const anchorY = midpointY < screenMidpointY
-            ? geometry.y + geometry.height
-            : geometry.y;
-        return {
-            "valid": true,
-            "x": geometry.x,
-            "y": anchorY,
-            "width": geometry.width,
-            "height": geometry.height,
-            "source": "trayGeometry"
+    function modifierLabel() {
+        const labels = {
+            "shift": "Shift",
+            "control": "Ctrl",
+            "alt": "Alt",
+            "meta": "Meta"
         };
+        const modifiers = settings.modifiers || ["shift"];
+        const names = [];
+        for (let i = 0; i < modifiers.length; i++) {
+            const key = String(modifiers[i]).toLowerCase();
+            names.push(labels[key] || modifiers[i]);
+        }
+        return names.length > 0 ? names.join("+") : "Shift";
     }
 
-    function showMenuFromTray() {
+    function showMenuFromAnchor(rawAnchor) {
         applyBackendState();
-        anchor = trayAnchor();
-        placementAnchor = normalizeAnchor(anchor);
+        anchor = rawAnchor && rawAnchor.valid ? rawAnchor : invalidAnchor();
+        placementAnchor = placementFromAnchor(anchor);
+        lastTrayAnchor = placementAnchor;
         actionEmitted = false;
         closeOnDeactivate = false;
         menuVisible = true;
@@ -267,22 +340,35 @@ Window {
         closeTimer.restart();
     }
 
-    function toggleTrayMenu() {
+    function showMenuFromTray() {
+        showMenuFromAnchor(lastTrayAnchor);
+    }
+
+    function toggleTrayMenuAt(rawAnchor) {
         if (menuVisible)
             closeMenu(true);
         else
-            showMenuFromTray();
+            showMenuFromAnchor(rawAnchor);
+    }
+
+    function toggleTrayMenu() {
+        toggleTrayMenuAt(lastTrayAnchor);
     }
 
     function orderedLayoutIndexes() {
-        const count = settings.layouts ? settings.layouts.length : 0;
-        const indexes = [];
-        if (activeLayout >= 0 && activeLayout < count)
-            indexes.push(activeLayout);
-        for (let i = 0; i < count; i++) {
-            if (i !== activeLayout)
-                indexes.push(i);
+        // Order top-to-bottom: least-recently-used at the top, most-recently
+        // -used (the active layout) at the bottom, nearest the panel.
+        const layouts = settings.layouts || [];
+        const mru = settings.layout_mru || [];
+        function rank(i) {
+            const layout = layouts[i];
+            const r = layout ? mru.indexOf(layout.id) : -1;
+            return r >= 0 ? r : mru.length + (layouts.length - i);
         }
+        const indexes = [];
+        for (let i = 0; i < layouts.length; i++)
+            indexes.push(i);
+        indexes.sort((a, b) => rank(b) - rank(a));
         return indexes;
     }
 
@@ -298,10 +384,10 @@ Window {
         let posted = false;
         if (backendMode)
             posted = backend.invoke_action(payload);
-        else
-            posted = postPayload(payload);
-        if (!posted && !backendMode)
+        else {
             print(actionPrefix + payload);
+            posted = true;
+        }
         if (posted && backendMode)
             applyBackendState();
         if (!shouldClose)
@@ -313,21 +399,6 @@ Window {
         else
             Qt.quit();
         return posted;
-    }
-
-    function postPayload(payload) {
-        if (actionUrl.length === 0)
-            return false;
-
-        try {
-            const request = new XMLHttpRequest();
-            request.open("POST", actionUrl, false);
-            request.setRequestHeader("Content-Type", "text/plain");
-            request.send(payload);
-            return true;
-        } catch (error) {
-            return false;
-        }
     }
 
     function zoneRect(zone, area) {
@@ -343,7 +414,7 @@ Window {
         return {
             "anchor": anchor,
             "placementAnchor": placementAnchor,
-            "trayGeometry": trayIcon.geometry,
+            "trayGeometry": lastTrayAnchor,
             "x": contextMenuX(),
             "y": contextMenuY(),
             "width": menuWidth,
@@ -378,42 +449,8 @@ Window {
         });
         if (backendMode)
             backend.invoke_action(payload);
-        else if (!postPayload(payload))
+        else
             console.log("FANZYZONES_PLACEMENT " + payload);
-    }
-
-    function readCommand() {
-        if (!hostMode)
-            return;
-        if (commandReadInFlight)
-            return;
-
-        try {
-            commandReadInFlight = true;
-            const request = new XMLHttpRequest();
-            request.onreadystatechange = function() {
-                if (request.readyState !== XMLHttpRequest.DONE)
-                    return;
-
-                commandReadInFlight = false;
-                try {
-                    if (request.status !== 0 && request.status !== 200)
-                        return;
-
-                    const command = JSON.parse(request.responseText);
-                    if (command.sequence === undefined || command.sequence === commandSequence)
-                        return;
-
-                    commandSequence = command.sequence;
-                    applyCommand(command);
-                } catch (error) {
-                }
-            };
-            request.open("GET", commandUrl + "?sequence=" + commandSequence + "&t=" + Date.now(), true);
-            request.send();
-        } catch (error) {
-            commandReadInFlight = false;
-        }
     }
 
     function applyCommand(command) {
@@ -430,7 +467,8 @@ Window {
 
         if (command.anchor !== undefined) {
             anchor = command.anchor;
-            placementAnchor = normalizeAnchor(anchor);
+            placementAnchor = placementFromAnchor(anchor);
+            lastTrayAnchor = placementAnchor;
         }
         actionEmitted = false;
         closeOnDeactivate = false;
@@ -441,23 +479,34 @@ Window {
         closeTimer.restart();
     }
 
+    function applyTrayCommand(commandJson) {
+        if (!commandJson || commandJson.length === 0)
+            return;
+
+        try {
+            const command = JSON.parse(commandJson);
+            if (command.sequence !== undefined && command.sequence === commandSequence)
+                return;
+            if (command.sequence !== undefined)
+                commandSequence = command.sequence;
+            if (command.action === "toggleTrayMenu")
+                toggleTrayMenuAt(command.anchor);
+            else
+                applyCommand(command);
+        } catch (error) {
+        }
+    }
+
     function closeMenu(emitClosed) {
         if (!trayMode) {
             Qt.quit();
             return;
         }
 
-        const wasVisible = menuVisible;
         deactivateCloseTimer.stop();
         closeTimer.stop();
         closeOnDeactivate = false;
         menuVisible = false;
-        if (hostMode && emitClosed && wasVisible && !actionEmitted) {
-            postPayload(JSON.stringify({
-                "event": "closed",
-                "sequence": commandSequence
-            }));
-        }
         actionEmitted = false;
     }
 
@@ -490,15 +539,6 @@ Window {
     }
 
     Timer {
-        id: commandPollTimer
-        interval: 16
-        repeat: true
-        running: root.hostMode
-        triggeredOnStart: true
-        onTriggered: readCommand()
-    }
-
-    Timer {
         id: placementLogTimer
         interval: 75
         repeat: false
@@ -527,22 +567,6 @@ Window {
         onActivated: root.closeMenu(true)
     }
 
-    Platform.SystemTrayIcon {
-        id: trayIcon
-
-        visible: root.trayMode
-        tooltip: root.trayToolTip()
-        icon.mask: true
-        icon.source: root.trayIconSource
-        onActivated: function(reason) {
-            if (reason === Platform.SystemTrayIcon.Trigger
-                || reason === Platform.SystemTrayIcon.Context
-                || reason === Platform.SystemTrayIcon.MiddleClick) {
-                root.toggleTrayMenu();
-            }
-        }
-    }
-
     Connections {
         target: root.backend
         ignoreUnknownSignals: true
@@ -558,19 +582,15 @@ Window {
         function onTray_icon_sourceChanged() {
             root.applyBackendState();
         }
-    }
 
-    MouseArea {
-        anchors.fill: parent
-        acceptedButtons: Qt.AllButtons
-        enabled: root.menuVisible
-        onPressed: root.closeMenu(true)
-        onWheel: root.closeMenu(true)
+        function onTray_command_jsonChanged() {
+            root.applyTrayCommand(root.backend.tray_command_json);
+        }
     }
 
     Rectangle {
-        x: root.contextMenuX() - root.x
-        y: root.contextMenuY() - root.y
+        x: 0
+        y: 0
         width: root.menuWidth
         height: root.menuHeight
         visible: root.menuVisible
@@ -590,46 +610,6 @@ Window {
                 id: menuColumn
                 width: parent.width
                 spacing: 3
-
-                Item {
-                    width: parent.width
-                    height: 32
-
-                    Text {
-                        x: 6
-                        y: 3
-                        text: "FanzyZones"
-                        color: root.textColor
-                        font.pixelSize: 15
-                        font.bold: true
-                    }
-
-                    Text {
-                        anchors.right: parent.right
-                        anchors.rightMargin: 6
-                        y: 6
-                        text: "KDE"
-                        color: root.accent
-                        font.pixelSize: 11
-                        font.bold: true
-                    }
-                }
-
-                Separator { width: parent.width }
-
-                MenuAction {
-                    width: parent.width
-                    text: "KWin Integration: " + root.integrationStatus
-                    actionEnabled: false
-                    labelColor: root.integrationStatus.indexOf("Error:") === 0 ? root.dangerColor : root.mutedTextColor
-                }
-
-                Separator { width: parent.width }
-
-                SectionLabel {
-                    width: parent.width
-                    text: "Layouts - pane snaps, name activates"
-                }
 
                 Repeater {
                     model: orderedLayoutIndexes()
@@ -676,7 +656,7 @@ Window {
 
                     MenuPill {
                         width: (parent.width - 6) / 2
-                        text: settings.snap_mode === "modifier" ? "Hold modifier and drag" : "Use modifier drag"
+                        text: settings.snap_mode === "modifier" ? "Hold " + root.modifierLabel() + " and drag" : "Use " + root.modifierLabel() + " drag"
                         checked: settings.snap_mode === "modifier"
                         accent: root.accent
                         onClicked: root.emitAction({"action": "setSnapMode", "mode": "modifier"})
@@ -703,56 +683,6 @@ Window {
                     width: parent.width
                     text: "Settings..."
                     onClicked: root.emitAction({"action": "openSettings"})
-                }
-
-                MenuAction {
-                    width: parent.width
-                    text: "Reveal Config in File Manager"
-                    onClicked: root.emitAction({"action": "revealConfig"})
-                }
-
-                Separator { width: parent.width }
-
-                SectionLabel {
-                    width: parent.width
-                    text: "Window"
-                }
-
-                MenuAction {
-                    width: parent.width
-                    text: "Previous Zone"
-                    onClicked: root.emitAction({"action": "previousZone"})
-                }
-
-                MenuAction {
-                    width: parent.width
-                    text: "Next Zone"
-                    onClicked: root.emitAction({"action": "nextZone"})
-                }
-
-                Separator { width: parent.width }
-
-                SectionLabel {
-                    width: parent.width
-                    text: "KWin"
-                }
-
-                MenuAction {
-                    width: parent.width
-                    text: "Install or Upgrade KWin Script"
-                    onClicked: root.emitAction({"action": "sync"})
-                }
-
-                MenuAction {
-                    width: parent.width
-                    text: "Reload Settings"
-                    onClicked: root.emitAction({"action": "reloadSettings"})
-                }
-
-                MenuAction {
-                    width: parent.width
-                    text: "Reload KWin"
-                    onClicked: root.emitAction({"action": "reloadKwin"})
                 }
 
                 Separator { width: parent.width }

@@ -7,7 +7,11 @@ import org.kde.plasma.components as PlasmaComponents
 Item {
     id: root
 
-    property var settings: ({})
+    // keyboard_shortcuts_enabled must be present at creation time: the
+    // ShortcutHandler.sequence bindings below are evaluated when the components
+    // are built (before loadSettings() runs), so an empty object would register
+    // every global shortcut with an empty key and leave them permanently unbound.
+    property var settings: ({ "keyboard_shortcuts_enabled": true })
     property int currentLayout: 0
     property var scopedLayouts: ({})
     property var connectedWindows: ({})
@@ -16,6 +20,7 @@ Item {
     property bool moving: false
     property bool moved: false
     property bool overlayForced: false
+    property bool layoutPreviewActive: false
     property var movingWindow: null
     property int highlightedZone: -1
     property var activeArea: Qt.rect(0, 0, 1, 1)
@@ -290,6 +295,57 @@ Item {
 
     function activeLayout() {
         return settings.layouts[root.activeLayoutIndex()];
+    }
+
+    function cycleLayout(delta) {
+        const count = settings.layouts ? settings.layouts.length : 0;
+        if (count === 0)
+            return;
+        let next = (root.activeLayoutIndex() + delta) % count;
+        if (next < 0)
+            next += count;
+        root.switchLayout(next);
+    }
+
+    // Keyboard layout switch: update runtime layout, show feedback, and persist
+    // through the daemon so the tray menu/config reflect it.
+    function switchLayout(index) {
+        root.setActiveLayout(index);
+        root.flashLayoutPreview();
+        root.persistActiveLayout(index);
+    }
+
+    function persistActiveLayout(index) {
+        try {
+            callDBus(
+                "com.benwbooth.FanzyZones",
+                "/com/benwbooth/FanzyZones",
+                "com.benwbooth.FanzyZones",
+                "InvokeAction",
+                JSON.stringify({"action": "syncActiveLayout", "layout": index, "closeMenu": false})
+            );
+        } catch (error) {
+            root.log("persistActiveLayout failed: " + error);
+        }
+    }
+
+    // Briefly show the zone overlay after a keyboard layout switch so the change
+    // is visible even when no window is being dragged.
+    function flashLayoutPreview() {
+        root.layoutPreviewActive = true;
+        overlay.showOverlay();
+        layoutPreviewTimer.restart();
+    }
+
+    Timer {
+        id: layoutPreviewTimer
+        interval: 1100
+        repeat: false
+        onTriggered: {
+            root.layoutPreviewActive = false;
+            if (!root.moving)
+                overlay.hideOverlay();
+        }
     }
 
     function zoneRect(zone, area) {
@@ -809,7 +865,7 @@ Item {
         Item {
             id: overlayContent
             anchors.fill: parent
-            visible: settings.snap_mode === "auto" || root.modifiersSatisfied() || overlayForced
+            visible: settings.snap_mode === "auto" || root.modifiersSatisfied() || overlayForced || root.layoutPreviewActive
 
             Repeater {
                 model: root.activeLayout() ? root.activeLayout().zones : []
@@ -831,6 +887,28 @@ Item {
                         font.pixelSize: 28
                         font.bold: true
                     }
+                }
+            }
+
+            Rectangle {
+                id: layoutNameBanner
+                visible: root.activeLayout() !== undefined
+                x: activeArea.x + (activeArea.width - width) / 2
+                y: activeArea.y + activeArea.height * 0.14
+                width: layoutNameLabel.implicitWidth + 48
+                height: layoutNameLabel.implicitHeight + 26
+                radius: 10
+                color: Qt.rgba(0.04, 0.05, 0.06, 0.82)
+                border.color: Qt.rgba(settings.highlight_color.red, settings.highlight_color.green, settings.highlight_color.blue, 0.9)
+                border.width: 2
+
+                PlasmaComponents.Label {
+                    id: layoutNameLabel
+                    anchors.centerIn: parent
+                    text: root.activeLayout() ? root.activeLayout().name : ""
+                    color: "white"
+                    font.pixelSize: 26
+                    font.bold: true
                 }
             }
 
@@ -892,23 +970,23 @@ Item {
     }
 
     ShortcutHandler {
-        name: "FanzyZones: Move active window to next zone"
-        text: "FanzyZones: Move active window to next zone"
-        sequence: settings.keyboard_shortcuts_enabled ? "Ctrl+Alt+Right" : ""
+        name: "FanzyZones: Snap window to next zone"
+        text: "FanzyZones: Snap window to next zone"
+        sequence: "Ctrl+Alt+Right"
         onActivated: root.cycleActiveWindow(1)
     }
 
     ShortcutHandler {
-        name: "FanzyZones: Move active window to previous zone"
-        text: "FanzyZones: Move active window to previous zone"
-        sequence: settings.keyboard_shortcuts_enabled ? "Ctrl+Alt+Left" : ""
+        name: "FanzyZones: Snap window to previous zone"
+        text: "FanzyZones: Snap window to previous zone"
+        sequence: "Ctrl+Alt+Left"
         onActivated: root.cycleActiveWindow(-1)
     }
 
     ShortcutHandler {
-        name: "FanzyZones: Toggle zone overlay"
-        text: "FanzyZones: Toggle zone overlay"
-        sequence: settings.keyboard_shortcuts_enabled ? "Ctrl+Alt+C" : ""
+        name: "FanzyZones: Toggle drag overlay"
+        text: "FanzyZones: Toggle drag overlay"
+        sequence: "Ctrl+Alt+C"
         onActivated: {
             if (moving)
                 overlayForced = !overlayForced;
@@ -916,26 +994,40 @@ Item {
     }
 
     ShortcutHandler {
-        name: "FanzyZones: Snap active window"
-        text: "FanzyZones: Snap active window"
-        sequence: settings.keyboard_shortcuts_enabled ? "Meta+Shift+Space" : ""
+        name: "FanzyZones: Snap focused window"
+        text: "FanzyZones: Snap focused window"
+        sequence: "Meta+Shift+Space"
         onActivated: root.snapClientToClosestZone(root.targetWindow())
     }
 
     ShortcutHandler {
-        name: "FanzyZones: Snap all windows"
-        text: "FanzyZones: Snap all windows"
-        sequence: settings.keyboard_shortcuts_enabled ? "Meta+Space" : ""
+        name: "FanzyZones: Snap every window"
+        text: "FanzyZones: Snap every window"
+        sequence: "Meta+Space"
         onActivated: root.snapAllWindows()
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Activate next layout"
+        text: "FanzyZones: Activate next layout"
+        sequence: "Meta+Shift+PgDown"
+        onActivated: root.cycleLayout(1)
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Activate previous layout"
+        text: "FanzyZones: Activate previous layout"
+        sequence: "Meta+Shift+PgUp"
+        onActivated: root.cycleLayout(-1)
     }
 
     Repeater {
         model: [1, 2, 3, 4, 5, 6, 7, 8, 9]
         delegate: Item {
             ShortcutHandler {
-                name: "FanzyZones: Move active window to zone " + modelData
-                text: "FanzyZones: Move active window to zone " + modelData
-                sequence: settings.keyboard_shortcuts_enabled ? "Ctrl+Alt+Num+" + modelData : ""
+                name: "FanzyZones: Snap window to zone " + modelData
+                text: "FanzyZones: Snap window to zone " + modelData
+                sequence: "Meta+Ctrl+" + modelData
                 onActivated: root.snapActiveWindowToZone(modelData - 1)
             }
         }
@@ -945,10 +1037,10 @@ Item {
         model: [1, 2, 3, 4, 5, 6, 7, 8, 9]
         delegate: Item {
             ShortcutHandler {
-                name: "FanzyZones: Activate layout " + modelData
-                text: "FanzyZones: Activate layout " + modelData
-                sequence: settings.keyboard_shortcuts_enabled ? "Meta+Num+" + modelData : ""
-                onActivated: root.setActiveLayout(modelData - 1)
+                name: "FanzyZones: Use layout " + modelData
+                text: "FanzyZones: Use layout " + modelData
+                sequence: "Meta+Shift+" + modelData
+                onActivated: root.switchLayout(modelData - 1)
             }
         }
     }

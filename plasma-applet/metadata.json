@@ -1,0 +1,21 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "Ben Booth"
+      }
+    ],
+    "Category": "Windows and Tasks",
+    "Description": "FanzyZones layout picker and KWin integration",
+    "EnabledByDefault": true,
+    "Icon": "fanzyzones-kde",
+    "Id": "com.benwbooth.fanzyzones",
+    "License": "MIT",
+    "Name": "FanzyZones",
+    "Version": "0.1.5",
+    "Website": "https://github.com/benwbooth/fanzyzones-kde"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0",
+  "X-Plasma-NotificationAreaCategory": "ApplicationStatus"
+}

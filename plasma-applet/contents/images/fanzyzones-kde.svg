@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <style type="text/css">
+    .ColorScheme-Text { color: #eff0f1; }
+  </style>
+  <path class="ColorScheme-Text" fill="currentColor" d="M8 10h48c3.31 0 6 2.69 6 6v32c0 3.31-2.69 6-6 6H8c-3.31 0-6-2.69-6-6V16c0-3.31 2.69-6 6-6Zm0 6v32h21V16H8Zm27 0v14h21V16H35Zm0 20v12h21V36H35Z"/>
+</svg>

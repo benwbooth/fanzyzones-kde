@@ -19,6 +19,7 @@ thiserror = "2.0"
 tokio = { version = "1.48", features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+zbus = { version = "5.16.0", features = ["tokio"] }
 
 [dev-dependencies]
 tempfile = "3.23"
