@@ -248,6 +248,57 @@ impl FanzyDbusService {
     async fn invoke_action(&self, payload: &str) -> zbus::fdo::Result<String> {
         invoke_action_payload(payload).await.map_err(fdo_error)
     }
+
+    /// JSON array of the FanzyZones shortcuts as {id, friendly, sequence}, with
+    /// user overrides applied. Used by the settings dialog to populate fields.
+    #[zbus(name = "Shortcuts")]
+    async fn shortcuts(&self) -> zbus::fdo::Result<String> {
+        let settings = config::load_or_default().map_err(fdo_error)?;
+        let list: Vec<_> = shortcuts::effective_shortcuts(&settings)
+            .into_iter()
+            .map(|(id, friendly, sequence)| {
+                serde_json::json!({ "id": id, "friendly": friendly, "sequence": sequence })
+            })
+            .collect();
+        serde_json::to_string(&list).map_err(|e| fdo_error(e.into()))
+    }
+
+    /// Rebind a shortcut from the settings dialog: persist the override and
+    /// apply it live to KGlobalAccel over this (owning) connection.
+    #[zbus(name = "SetShortcut")]
+    async fn set_shortcut(
+        &self,
+        #[zbus(connection)] connection: &zbus::Connection,
+        id: &str,
+        sequence: &str,
+    ) -> zbus::fdo::Result<String> {
+        set_shortcut_binding(connection, id, sequence)
+            .await
+            .map_err(fdo_error)
+    }
+}
+
+async fn set_shortcut_binding(
+    connection: &zbus::Connection,
+    id: &str,
+    sequence: &str,
+) -> Result<String> {
+    let mut settings = config::load_or_default()?;
+    if shortcuts::shortcut_defs().iter().any(|d| d.id == id) {
+        settings
+            .shortcut_overrides
+            .insert(id.to_string(), sequence.to_string());
+        config::save(&settings)?;
+        let key = shortcuts::string_to_keycode(sequence).unwrap_or(0);
+        shortcuts::apply_shortcut(connection, id, key).await?;
+    }
+    let list: Vec<_> = shortcuts::effective_shortcuts(&settings)
+        .into_iter()
+        .map(|(id, friendly, sequence)| {
+            serde_json::json!({ "id": id, "friendly": friendly, "sequence": sequence })
+        })
+        .collect();
+    Ok(serde_json::to_string(&list)?)
 }
 
 fn fdo_error(err: anyhow::Error) -> zbus::fdo::Error {

@@ -52,6 +52,10 @@ pub struct Settings {
     /// Layout ids ordered most-recently-used first. Maintained by normalize().
     #[serde(default)]
     pub layout_mru: Vec<String>,
+    /// User overrides for global shortcut keys: action id -> sequence string
+    /// (e.g. "Meta+Ctrl+1"). Empty string means the shortcut is unbound.
+    #[serde(default)]
+    pub shortcut_overrides: std::collections::HashMap<String, String>,
     #[serde(default = "default_gap")]
     pub gap: i32,
     #[serde(default = "default_outer_padding")]
@@ -148,6 +152,7 @@ impl Default for Settings {
             modifiers: default_modifiers(),
             active_layout: 0,
             layout_mru: Vec::new(),
+            shortcut_overrides: std::collections::HashMap::new(),
             gap: default_gap(),
             outer_padding: default_outer_padding(),
             enable_zone_overlay: true,
