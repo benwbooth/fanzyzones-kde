@@ -18,25 +18,39 @@
           inherit system overlays;
         };
 
+        # The backend is pure Rust now (no Qt). This builds a normal (glibc)
+        # package for Nix users; the portable static-musl artifact for other
+        # distros is produced by the CI workflow (cargo --target musl), which is
+        # far less friction than coaxing buildRustPackage onto pkgsStatic.
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
         };
 
+        # CLI tools the wrapper puts on PATH at runtime (the binary shells out to
+        # these — it does NOT link them): kpackagetool6, kwriteconfig6/kreadconfig6,
+        # busctl, qdbus6, xdg-open.
         runtimeDeps = with pkgs; [
           kdePackages.kpackage
           kdePackages.kconfig
-          kdePackages.kwindowsystem
+          kdePackages.qttools
           systemd
-          qt6.qtbase
-          qt6.qtdeclarative
-          qt6.qttools
           xdg-utils
         ];
 
-        nativeBuildInputs = with pkgs; [
-          rustToolchain
-          pkg-config
-        ];
+        installResources = ''
+          mkdir -p $out/share/fanzyzones-kde
+          cp -R kwin-script $out/share/fanzyzones-kde/kwin-script
+          mkdir -p $out/share/plasma/plasmoids
+          cp -R plasma-applet $out/share/plasma/plasmoids/com.benwbooth.fanzyzones
+          mkdir -p $out/share/icons
+          cp -R resources/icons/hicolor $out/share/icons/
+          wrapProgram $out/bin/fanzyzones-kde \
+            --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps} \
+            --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script" \
+            --set FANZYZONES_KDE_PLASMOID_DIR "$out/share/plasma/plasmoids/com.benwbooth.fanzyzones" \
+            --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons" \
+            --set FANZYZONES_KDE_TRAY_ICON_SOURCE "$out/share/icons/hicolor/scalable/status/fanzyzones-kde.svg"
+        '';
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
@@ -44,38 +58,11 @@
           version = "0.1.0";
           src = ./.;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-          };
+          cargoLock.lockFile = ./Cargo.lock;
 
-          nativeBuildInputs = nativeBuildInputs ++ (with pkgs; [
-            makeWrapper
-            qt6.wrapQtAppsHook
-          ]);
+          nativeBuildInputs = [ pkgs.makeWrapper ];
 
-          buildInputs = with pkgs; [
-            dbus
-            qt6.qtbase
-            qt6.qtdeclarative
-            qt6.qtwayland
-          ];
-
-          QT_DECLARATIVE_LIBEXEC = "${pkgs.qt6.qtdeclarative}/libexec";
-
-          postInstall = ''
-            mkdir -p $out/share/fanzyzones-kde
-            cp -R kwin-script $out/share/fanzyzones-kde/kwin-script
-            mkdir -p $out/share/plasma/plasmoids
-            cp -R plasma-applet $out/share/plasma/plasmoids/com.benwbooth.fanzyzones
-            mkdir -p $out/share/icons
-            cp -R resources/icons/hicolor $out/share/icons/
-            wrapProgram $out/bin/fanzyzones-kde \
-              --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps} \
-              --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script" \
-              --set FANZYZONES_KDE_PLASMOID_DIR "$out/share/plasma/plasmoids/com.benwbooth.fanzyzones" \
-              --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons" \
-              --set FANZYZONES_KDE_TRAY_ICON_SOURCE "$out/share/icons/hicolor/scalable/status/fanzyzones-kde.svg"
-          '';
+          postInstall = installResources;
 
           meta = with pkgs.lib; {
             description = "KDE Plasma applet and KWin script for FancyZones-style window layouts";
@@ -86,7 +73,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = nativeBuildInputs ++ runtimeDeps ++ (with pkgs; [
+          packages = [ rustToolchain pkgs.pkg-config ] ++ runtimeDeps ++ (with pkgs; [
             cargo-watch
             clippy
             rust-analyzer
@@ -94,7 +81,6 @@
           ]);
 
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
-          QT_DECLARATIVE_LIBEXEC = "${pkgs.qt6.qtdeclarative}/libexec";
 
           shellHook = ''
             echo "FanzyZones KDE development environment"
