@@ -70,6 +70,7 @@ KCM.SimpleKCM {
         paddingSpin.value = s.outer_padding || 0;
         shortcutsCheck.checked = s.keyboard_shortcuts_enabled !== false;
         zoneNumbersCheck.checked = s.show_zone_numbers !== false;
+        macsimizeCheck.checked = s.macsimize_maximized !== false;
         layoutPickerCheck.checked = s.enable_zone_selector === true;
         layoutBottomUpCheck.checked = s.layout_menu_bottom_up !== false;
         opacitySlider.value = s.overlay_opacity !== undefined ? s.overlay_opacity : 0.35;
@@ -91,6 +92,9 @@ KCM.SimpleKCM {
             "outer_padding": paddingSpin.value,
             "keyboard_shortcuts_enabled": shortcutsCheck.checked,
             "show_zone_numbers": zoneNumbersCheck.checked,
+            "macsimize_maximized": macsimizeCheck.checked,
+            "macsimize_fullscreen": macsimizeCheck.checked,
+            "dynamic_workspaces": macsimizeCheck.checked,
             "enable_zone_selector": layoutPickerCheck.checked,
             "layout_menu_bottom_up": layoutBottomUpCheck.checked,
             "overlay_opacity": opacitySlider.value,
@@ -169,6 +173,13 @@ KCM.SimpleKCM {
         QQC2.CheckBox {
             id: layoutPickerCheck
             text: i18n("Show layout picker bar while dragging (auto-snap)")
+            onToggled: page.markDirty()
+        }
+
+        QQC2.CheckBox {
+            id: macsimizeCheck
+            Kirigami.FormData.label: i18n("Workspaces:")
+            text: i18n("Maximize/full-screen to a new workspace (macOS-style)")
             onToggled: page.markDirty()
         }
 

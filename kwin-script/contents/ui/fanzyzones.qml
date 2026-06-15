@@ -973,13 +973,22 @@ Item {
         const saved = savedWindows[id];
         if (!saved || !saved.macsimized || !client.desktops || client.desktops.length === 0)
             return;
-        const desktop = client.desktops[0];
-        client.desktops = saved.desktops && saved.desktops.length > 0 ? saved.desktops : [Workspace.desktops[0]];
-        const idx = root.managedDesktopIndex(desktop);
+        const managedDesktop = client.desktops[0];
+        const original = saved.desktops && saved.desktops.length > 0
+            ? saved.desktops
+            : [Workspace.desktops[0]];
+        // Move the window back to its original desktop(s).
+        client.desktops = original;
+        // Follow the window back: if the view is still on the maximize desktop
+        // we're about to remove, switch to the original desktop first so the
+        // user doesn't get stranded on a blank workspace.
+        if (original[0] && Workspace.currentDesktop === managedDesktop)
+            Workspace.currentDesktop = original[0];
+        const idx = root.managedDesktopIndex(managedDesktop);
         if (idx >= 0)
             managedDesktops.splice(idx, 1);
-        if (!root.desktopHasWindows(desktop))
-            Workspace.removeDesktop(desktop);
+        if (!root.desktopHasWindows(managedDesktop))
+            Workspace.removeDesktop(managedDesktop);
         saved.macsimized = false;
     }
 
