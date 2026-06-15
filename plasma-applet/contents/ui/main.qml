@@ -315,41 +315,6 @@ PlasmoidItem {
 
                     Separator { width: parent.width }
 
-                    SectionLabel {
-                        width: parent.width
-                        text: "Snap Mode"
-                    }
-
-                    Row {
-                        width: parent.width
-                        height: 30
-                        spacing: 6
-
-                        MenuPill {
-                            width: (parent.width - 6) / 2
-                            text: main.settings.snap_mode === "modifier" ? "Hold " + dialog.modifierLabel() + " and drag" : "Use " + dialog.modifierLabel() + " drag"
-                            checked: main.settings.snap_mode === "modifier"
-                            accent: dialog.accent
-                            onClicked: main.invokeAction({"action": "setSnapMode", "mode": "modifier"})
-                        }
-
-                        MenuPill {
-                            width: (parent.width - 6) / 2
-                            text: main.settings.snap_mode === "auto" ? "Auto-snap on drag" : "Use auto-snap"
-                            checked: main.settings.snap_mode === "auto"
-                            accent: dialog.accent
-                            onClicked: main.invokeAction({"action": "setSnapMode", "mode": "auto"})
-                        }
-                    }
-
-                    Separator { width: parent.width }
-
-                    MenuAction {
-                        width: parent.width
-                        text: "Create Custom Layout..."
-                        onClicked: main.invokeAction({"action": "createLayout"})
-                    }
-
                     MenuAction {
                         width: parent.width
                         text: "Settings..."
@@ -360,12 +325,6 @@ PlasmoidItem {
                     }
 
                     Separator { width: parent.width }
-
-                    MenuAction {
-                        width: parent.width
-                        text: "About FanzyZones"
-                        onClicked: main.invokeAction({"action": "about"})
-                    }
 
                     MenuAction {
                         width: parent.width
