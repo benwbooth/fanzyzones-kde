@@ -68,7 +68,7 @@ KCM.SimpleKCM {
         zoneNumbersCheck.checked = s.show_zone_numbers !== false;
         opacitySlider.value = s.overlay_opacity !== undefined ? s.overlay_opacity : 0.35;
         if (s.highlight_color)
-            colorButton.color = Qt.rgba(s.highlight_color.red, s.highlight_color.green, s.highlight_color.blue, 1);
+            colorSwatch.color = Qt.rgba(s.highlight_color.red, s.highlight_color.green, s.highlight_color.blue, 1);
     }
 
     function pushPatch(patch) {
@@ -164,27 +164,37 @@ KCM.SimpleKCM {
             QQC2.Label { text: Math.round(opacitySlider.value * 100) + "%" }
         }
 
-        QQC2.Button {
-            id: colorButton
+        RowLayout {
             Kirigami.FormData.label: i18n("Highlight color:")
-            property color color: Qt.rgba(0.18, 0.48, 0.96, 1)
-            implicitWidth: Kirigami.Units.gridUnit * 4
-            onClicked: colorDialog.open()
 
-            background: Rectangle {
-                color: colorButton.color
+            Rectangle {
+                id: colorSwatch
+                implicitWidth: Kirigami.Units.gridUnit * 3
+                implicitHeight: Kirigami.Units.gridUnit * 1.4
                 radius: 3
+                color: Qt.rgba(0.18, 0.48, 0.96, 1)
                 border.color: Kirigami.Theme.textColor
                 border.width: 1
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: colorDialog.open()
+                }
+            }
+
+            QQC2.Button {
+                text: i18n("Choose…")
+                onClicked: colorDialog.open()
             }
         }
     }
 
     QtDialogs.ColorDialog {
         id: colorDialog
-        selectedColor: colorButton.color
+        selectedColor: colorSwatch.color
         onAccepted: {
-            colorButton.color = selectedColor;
+            colorSwatch.color = selectedColor;
             page.pushPatch({"highlight_color": {
                 "red": selectedColor.r,
                 "green": selectedColor.g,
