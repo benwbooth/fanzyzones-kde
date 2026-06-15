@@ -40,10 +40,31 @@ chmod +x fanzyzones-kde-x86_64-linux
 
 ### Nix
 
+Imperative:
+
 ```sh
 nix profile install github:benwbooth/fanzyzones-kde
 fanzyzones-kde install --reload
 ```
+
+Declarative with Home Manager — add the flake input and import the module:
+
+```nix
+# flake.nix inputs
+inputs.fanzyzones-kde = {
+  url = "github:benwbooth/fanzyzones-kde";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+
+# Home Manager configuration
+imports = [ inputs.fanzyzones-kde.homeManagerModules.default ];
+programs.fanzyzones-kde.enable = true;
+```
+
+The module adds the package and runs its installer on activation (registers the
+applet + KWin script, writes settings, adds the tray item) — no manual step.
+FanzyZones' Plasma/KWin integration is per-user mutable state, so this is the
+declarative way to wire it in; it takes effect in your next Plasma session.
 
 ### From source
 

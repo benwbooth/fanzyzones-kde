@@ -101,5 +101,41 @@
             export FANZYZONES_KDE_TRAY_ICON_SOURCE="$PWD/resources/icons/hicolor/scalable/status/fanzyzones-kde.svg"
           '';
         };
-      });
+      })
+      // {
+        # Home Manager module — declarative install. FanzyZones' Plasma/KWin
+        # integration is stateful (kwinrc settings, the KWin script, the tray
+        # item, kpackagetool registration), so it can't live purely in the Nix
+        # store; the module installs the package and runs its installer on
+        # activation so there's no manual `install` step.
+        homeManagerModules.default = { config, lib, pkgs, ... }:
+          let
+            cfg = config.programs.fanzyzones-kde;
+          in
+          {
+            options.programs.fanzyzones-kde = {
+              enable =
+                lib.mkEnableOption "FanzyZones KDE (FancyZones-style tiling for Plasma 6)";
+              package = lib.mkOption {
+                type = lib.types.package;
+                default = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+                defaultText = lib.literalExpression "fanzyzones-kde.packages.\${system}.default";
+                description = "The fanzyzones-kde package to install.";
+              };
+            };
+
+            config = lib.mkIf cfg.enable {
+              home.packages = [ cfg.package ];
+
+              # Best-effort: register the applet/KWin script + write settings and
+              # reload. `|| true` so a switch from a TTY (no live session to
+              # reload) never fails; the install/config steps still apply and
+              # take effect on the next Plasma session.
+              home.activation.fanzyzonesKde =
+                lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+                  run ${lib.getExe cfg.package} install --reload || true
+                '';
+            };
+          };
+      };
 }
