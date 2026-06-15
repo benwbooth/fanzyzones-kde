@@ -65,7 +65,6 @@
           postInstall = ''
             mkdir -p $out/share/fanzyzones-kde
             cp -R kwin-script $out/share/fanzyzones-kde/kwin-script
-            cp -R resources/qml $out/share/fanzyzones-kde/qml
             mkdir -p $out/share/plasma/plasmoids
             cp -R plasma-applet $out/share/plasma/plasmoids/com.benwbooth.fanzyzones
             mkdir -p $out/share/icons
@@ -75,9 +74,7 @@
               --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script" \
               --set FANZYZONES_KDE_PLASMOID_DIR "$out/share/plasma/plasmoids/com.benwbooth.fanzyzones" \
               --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons" \
-              --set FANZYZONES_KDE_TRAY_ICON_SOURCE "$out/share/icons/hicolor/scalable/status/fanzyzones-kde.svg" \
-              --set FANZYZONES_KDE_LAYOUT_MENU_QML "$out/share/fanzyzones-kde/qml/LayoutMenu.qml" \
-              --set FANZYZONES_KDE_LAYOUT_EDITOR_QML "$out/share/fanzyzones-kde/qml/LayoutEditor.qml"
+              --set FANZYZONES_KDE_TRAY_ICON_SOURCE "$out/share/icons/hicolor/scalable/status/fanzyzones-kde.svg"
           '';
 
           meta = with pkgs.lib; {
@@ -106,7 +103,6 @@
             export FANZYZONES_KDE_PLASMOID_DIR="$PWD/plasma-applet"
             export FANZYZONES_KDE_ICON_THEME_DIR="$PWD/resources/icons"
             export FANZYZONES_KDE_TRAY_ICON_SOURCE="$PWD/resources/icons/hicolor/scalable/status/fanzyzones-kde.svg"
-            export FANZYZONES_KDE_LAYOUT_MENU_QML="$PWD/resources/qml/LayoutMenu.qml"
           '';
         };
       });
