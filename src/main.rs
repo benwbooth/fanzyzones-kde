@@ -743,6 +743,9 @@ pub(crate) enum VisualMenuAction {
     SetSnapMode { mode: SnapMode },
     CreateLayout,
     EditLayout { layout: usize },
+    /// Persist a layout produced by the in-plasmoid editor: build it, upsert by
+    /// id (or append), make it active, and resync KWin.
+    SaveLayout { result: serde_json::Value },
     DeleteLayout { layout: usize },
     OpenSettings,
     RevealConfig,
@@ -973,6 +976,13 @@ pub(crate) async fn handle_visual_menu_action(
             ensure_layout_exists(settings, layout)?;
             spawn_layout_editor_subprocess(Some(layout)).await?;
             *settings = load_and_save_settings()?;
+        }
+        VisualMenuAction::SaveLayout { result } => {
+            let layout = layout_from_editor(result)?;
+            upsert_layout(settings, layout);
+            config::save(settings)?;
+            controller.write_settings(settings).await?;
+            reload_runtime_settings_or_kwin(controller).await?;
         }
         VisualMenuAction::DeleteLayout { layout } => {
             delete_custom_layout(settings, layout)?;

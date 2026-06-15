@@ -147,6 +147,49 @@ PlasmoidItem {
         return true;
     }
 
+    // The visual layout editor runs here, in plasmashell's QML engine, so the
+    // backend binary needs no Qt. Saving routes through the CLI's saveLayout
+    // action (pure Rust: build + upsert + persist + resync).
+    LayoutEditorWindow {
+        id: editorWindow
+        onSubmitted: function(result) {
+            main.invokeAction({ "action": "saveLayout", "result": result }, false);
+        }
+    }
+
+    function nextCustomLayoutName() {
+        const taken = {};
+        const layouts = settings.layouts || [];
+        for (let i = 0; i < layouts.length; i++)
+            taken[layouts[i].name] = true;
+        if (!taken["My Layout"])
+            return "My Layout";
+        let n = 2;
+        while (taken["My Layout " + n])
+            n++;
+        return "My Layout " + n;
+    }
+
+    function openCreateLayout() {
+        main.closeMenu();
+        editorWindow.open({ "name": main.nextCustomLayoutName(), "id": "", "isBuiltIn": false, "zones": [] });
+    }
+
+    function openEditLayout(index) {
+        main.closeMenu();
+        const layout = settings.layouts ? settings.layouts[index] : undefined;
+        if (!layout)
+            return;
+        editorWindow.open({
+            "name": layout.name,
+            "id": layout.id,
+            "isBuiltIn": layout.is_built_in === true,
+            "zones": (layout.zones || []).map(function(z) {
+                return { "x": z.x, "y": z.y, "width": z.width, "height": z.height };
+            })
+        });
+    }
+
     Component.onCompleted: refreshState()
 
     preferredRepresentation: compactRepresentation
@@ -378,8 +421,7 @@ PlasmoidItem {
                             }
 
                             onEditLayout: function(index) {
-                                main.closeMenu();
-                                main.invokeAction({"action": "editLayout", "layout": index});
+                                main.openEditLayout(index);
                             }
 
                             onDeleteLayout: function(index) {
@@ -393,10 +435,7 @@ PlasmoidItem {
                     MenuAction {
                         width: parent.width
                         text: "New Custom Layout…"
-                        onClicked: {
-                            main.closeMenu();
-                            main.invokeAction({"action": "createLayout"});
-                        }
+                        onClicked: main.openCreateLayout()
                     }
 
                     Separator { width: parent.width }
