@@ -351,7 +351,8 @@ Item {
     }
 
     function zoneRect(zone, area) {
-        return root.zoneRectForLayout(root.activeLayout(), zone, area);
+        // The overlay/hit-testing always operate on the screen being dragged on.
+        return root.zoneRectForLayout(root.layoutForScreen(activeScreen), zone, area);
     }
 
     function zoneRectForLayout(layout, zone, area) {
@@ -536,20 +537,25 @@ Item {
     // The layout that should tile a given screen. With per-screen tracking each
     // monitor keeps its own layout (like FancyZones); otherwise every monitor
     // shares the active layout.
-    function layoutForScreen(screen) {
-        // Per-display assignment (by screen name -> layout id) takes priority,
-        // matching the menu's display picker; fall back to the global active
-        // layout for displays without an explicit assignment.
+    // Index of the layout a screen should use: its per-display assignment (by
+    // screen name -> layout id, matching the menu's picker) if any, else the
+    // global active layout. Used so the overlay/snap on each monitor matches the
+    // tiles synced to it.
+    function layoutIndexForScreen(screen) {
         if (screen && screen.name && settings.display_layouts) {
             const assignedId = settings.display_layouts[screen.name];
             if (assignedId) {
                 for (let i = 0; i < settings.layouts.length; i++) {
                     if (settings.layouts[i].id === assignedId)
-                        return settings.layouts[i];
+                        return i;
                 }
             }
         }
-        return settings.layouts ? settings.layouts[root.activeLayoutIndex()] : undefined;
+        return root.activeLayoutIndex();
+    }
+
+    function layoutForScreen(screen) {
+        return settings.layouts ? settings.layouts[root.layoutIndexForScreen(screen)] : undefined;
     }
 
     // Push each screen's layout into KWin's custom tiles so that KWin's native
@@ -605,7 +611,8 @@ Item {
     }
 
     function moveClientToZone(client, index) {
-        return root.moveClientToLayoutZone(client, root.activeLayoutIndex(), index);
+        // Snap into the layout of the screen the window is on.
+        return root.moveClientToLayoutZone(client, root.layoutIndexForScreen(client ? client.screen : null), index);
     }
 
     function moveClientToLayoutZone(client, layoutIndex, index) {
@@ -629,7 +636,7 @@ Item {
         if (root.isSkippedWindow(client))
             return -1;
         root.refreshArea(client);
-        const layout = root.activeLayout();
+        const layout = root.layoutForScreen(activeScreen);
         const center = Qt.point(
             client.frameGeometry.x + client.frameGeometry.width / 2,
             client.frameGeometry.y + client.frameGeometry.height / 2
@@ -660,8 +667,9 @@ Item {
         const client = root.targetWindow();
         if (root.isSkippedWindow(client))
             return;
-        const layout = root.activeLayout();
-        let current = client.fanzyLayout === root.activeLayoutIndex() ? client.fanzyZone : root.nearestZoneIndex(client);
+        const screenIndex = root.layoutIndexForScreen(client ? client.screen : null);
+        const layout = settings.layouts[screenIndex];
+        let current = client.fanzyLayout === screenIndex ? client.fanzyZone : root.nearestZoneIndex(client);
         if (current < 0)
             current = 0;
         const target = (current + delta + layout.zones.length) % layout.zones.length;
@@ -737,7 +745,7 @@ Item {
         root.refreshArea(movingWindow);
         highlightedZone = -1;
         const cursor = Workspace.cursorPos;
-        const layout = root.activeLayout();
+        const layout = root.layoutForScreen(activeScreen);
         const selectorHeight = 86;
 
         if (settings.enable_zone_selector && cursor.y >= activeArea.y && cursor.y <= activeArea.y + selectorHeight) {
@@ -1118,7 +1126,7 @@ Item {
             visible: settings.snap_mode === "auto" || root.modifiersSatisfied() || overlayForced || root.layoutPreviewActive
 
             Repeater {
-                model: root.activeLayout() ? root.activeLayout().zones : []
+                model: root.layoutForScreen(activeScreen) ? root.layoutForScreen(activeScreen).zones : []
                 delegate: Rectangle {
                     property var rect: root.zoneRect(modelData, activeArea)
                     x: rect.x
@@ -1142,7 +1150,7 @@ Item {
 
             Rectangle {
                 id: layoutNameBanner
-                visible: root.activeLayout() !== undefined
+                visible: root.layoutForScreen(activeScreen) !== undefined
                 x: activeArea.x + (activeArea.width - width) / 2
                 y: activeArea.y + activeArea.height * 0.14
                 width: layoutNameLabel.implicitWidth + 48
@@ -1155,7 +1163,7 @@ Item {
                 PlasmaComponents.Label {
                     id: layoutNameLabel
                     anchors.centerIn: parent
-                    text: root.activeLayout() ? root.activeLayout().name : ""
+                    text: root.layoutForScreen(activeScreen) ? root.layoutForScreen(activeScreen).name : ""
                     color: "white"
                     font.pixelSize: 26
                     font.bold: true
