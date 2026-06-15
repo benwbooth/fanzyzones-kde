@@ -15,6 +15,9 @@ PlasmoidItem {
 
     property var settings: ({ "active_layout": 0, "layouts": [] })
     property int activeLayout: activeLayoutFromSettings(settings)
+    // Connected display names and the one the layout picker is assigning to.
+    property var displays: []
+    property string targetDisplay: ""
     property string integrationStatus: "Starting FanzyZones..."
     property int cliNonce: 0
     property var executableCallbacks: ({})
@@ -48,8 +51,50 @@ PlasmoidItem {
         if (state.settings !== undefined)
             settings = state.settings;
         activeLayout = activeLayoutFromSettings(settings);
+        // Enumerate displays via Qt directly (QScreen.name matches KWin's
+        // connector name, e.g. "DP-1"), so no kscreen/CLI round-trip is needed.
+        displays = enumerateDisplays();
+        // Keep the picker target valid; default to the first display.
+        if (main.displays.indexOf(main.targetDisplay) < 0)
+            main.targetDisplay = main.displays.length > 0 ? main.displays[0] : "";
         if (state.status !== undefined)
             integrationStatus = state.status;
+    }
+
+    function enumerateDisplays() {
+        const out = [];
+        try {
+            const screens = Qt.application.screens;
+            for (let i = 0; i < screens.length; i++) {
+                if (screens[i] && screens[i].name)
+                    out.push(screens[i].name);
+            }
+        } catch (error) {
+            // No screen access; the picker simply won't show.
+        }
+        return out;
+    }
+
+    // The layout index assigned to a display: its per-display assignment (by id)
+    // if any, otherwise the global active layout.
+    function layoutIndexForDisplay(name) {
+        const map = settings.display_layouts || ({});
+        const id = name ? map[name] : undefined;
+        if (id && settings.layouts) {
+            for (let i = 0; i < settings.layouts.length; i++) {
+                if (settings.layouts[i].id === id)
+                    return i;
+            }
+        }
+        return main.activeLayout;
+    }
+
+    // The layout index the menu should mark active: the target display's layout
+    // when more than one display is present, else the global active layout.
+    function menuActiveLayout() {
+        if (main.displays.length > 0)
+            return main.layoutIndexForDisplay(main.targetDisplay);
+        return main.activeLayout;
     }
 
     P5Support.DataSource {
@@ -283,6 +328,30 @@ PlasmoidItem {
                     width: parent.width
                     spacing: 3
 
+                    // Per-display layout picker — only with more than one monitor.
+                    // Pick a display, then the layout you choose applies to it.
+                    SectionLabel {
+                        visible: main.displays.length > 0
+                        text: "Set layout for display:"
+                    }
+
+                    Repeater {
+                        model: main.displays.length > 0 ? main.displays : []
+
+                        delegate: MenuAction {
+                            required property string modelData
+                            width: menuColumn.width
+                            text: (modelData === main.targetDisplay ? "●  " : "○  ") + modelData
+                            labelColor: modelData === main.targetDisplay ? dialog.accent : dialog.textColor
+                            onClicked: main.targetDisplay = modelData
+                        }
+                    }
+
+                    Separator {
+                        width: parent.width
+                        visible: main.displays.length > 0
+                    }
+
                     Repeater {
                         model: dialog.orderedLayoutIndexes()
 
@@ -292,11 +361,15 @@ PlasmoidItem {
                             width: menuColumn.width
                             layoutIndex: modelData
                             layout: main.settings.layouts[modelData]
-                            active: modelData === main.activeLayout
+                            active: modelData === main.menuActiveLayout()
                             accent: dialog.accent
 
                             onSetActive: function(index) {
-                                if (main.invokeAction({"action": "setLayout", "layout": index}, false))
+                                var act = { "action": "setLayout", "layout": index };
+                                var perDisplay = main.displays.length > 0 && main.targetDisplay.length > 0;
+                                if (perDisplay)
+                                    act.display = main.targetDisplay;
+                                if (main.invokeAction(act, false) && !perDisplay)
                                     main.activeLayout = index;
                             }
 

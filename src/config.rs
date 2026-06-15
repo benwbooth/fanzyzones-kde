@@ -60,6 +60,11 @@ pub struct Settings {
     /// (e.g. "Meta+Ctrl+1"). Empty string means the shortcut is unbound.
     #[serde(default)]
     pub shortcut_overrides: std::collections::HashMap<String, String>,
+    /// Per-display layout assignment: screen name (e.g. "DP-1") -> layout id.
+    /// Displays without an entry fall back to `active_layout`. Matches the
+    /// macOS FanzyZones model of assigning a layout to each display.
+    #[serde(default)]
+    pub display_layouts: std::collections::HashMap<String, String>,
     #[serde(default = "default_gap")]
     pub gap: i32,
     #[serde(default = "default_outer_padding")]
@@ -164,6 +169,7 @@ impl Default for Settings {
             layout_mru: Vec::new(),
             layout_menu_bottom_up: true,
             shortcut_overrides: std::collections::HashMap::new(),
+            display_layouts: std::collections::HashMap::new(),
             gap: default_gap(),
             outer_padding: default_outer_padding(),
             enable_zone_overlay: true,
@@ -211,6 +217,10 @@ impl Settings {
             self.layout_mru.insert(0, active_id);
         }
 
+        // Drop per-display assignments whose layout no longer exists.
+        self.display_layouts
+            .retain(|_, id| valid.contains(id.as_str()));
+
         self.gap = self.gap.max(0);
         self.outer_padding = self.outer_padding.max(0);
         self.skipped_window_classes
@@ -239,6 +249,7 @@ impl Settings {
             .map(|layout| layout.name.as_str())
             .unwrap_or("Unknown")
     }
+
 }
 
 pub fn project_dirs() -> Result<ProjectDirs> {

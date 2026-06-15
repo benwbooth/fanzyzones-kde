@@ -726,7 +726,13 @@ pub(crate) enum HandleOutcome {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action", rename_all = "camelCase")]
 pub(crate) enum VisualMenuAction {
-    SetLayout { layout: usize },
+    SetLayout {
+        layout: usize,
+        /// When set, assign the layout to this display (screen name) instead of
+        /// changing the global active layout.
+        #[serde(default)]
+        display: Option<String>,
+    },
     /// Persist a layout change that the KWin script already applied at runtime
     /// (e.g. a keyboard switch), without restarting the script.
     SyncActiveLayout { layout: usize },
@@ -906,9 +912,15 @@ pub(crate) async fn handle_visual_menu_action(
     settings: &mut Settings,
 ) -> Result<bool> {
     match action {
-        VisualMenuAction::SetLayout { layout } => {
+        VisualMenuAction::SetLayout { layout, display } => {
             ensure_layout_exists(settings, layout)?;
-            settings.active_layout = layout;
+            match display {
+                Some(display) => {
+                    let id = settings.layouts[layout].id.clone();
+                    settings.display_layouts.insert(display, id);
+                }
+                None => settings.active_layout = layout,
+            }
             config::save(settings)?;
             controller.write_settings(settings).await?;
             if controller.set_runtime_layout(layout).await.is_err() {

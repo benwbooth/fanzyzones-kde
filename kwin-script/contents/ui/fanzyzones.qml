@@ -125,6 +125,7 @@ Item {
             "snap_mode": "modifier",
             "modifiers": ["shift"],
             "active_layout": 0,
+            "display_layouts": {},
             "gap": 0,
             "outer_padding": 0,
             "enable_zone_overlay": true,
@@ -536,16 +537,19 @@ Item {
     // monitor keeps its own layout (like FancyZones); otherwise every monitor
     // shares the active layout.
     function layoutForScreen(screen) {
-        const key = root.tileScreenKey(screen);
-        let index;
-        if (key.length > 0) {
-            if (scopedLayouts[key] === undefined)
-                scopedLayouts[key] = currentLayout;
-            index = scopedLayouts[key];
-        } else {
-            index = root.activeLayoutIndex();
+        // Per-display assignment (by screen name -> layout id) takes priority,
+        // matching the menu's display picker; fall back to the global active
+        // layout for displays without an explicit assignment.
+        if (screen && screen.name && settings.display_layouts) {
+            const assignedId = settings.display_layouts[screen.name];
+            if (assignedId) {
+                for (let i = 0; i < settings.layouts.length; i++) {
+                    if (settings.layouts[i].id === assignedId)
+                        return settings.layouts[i];
+                }
+            }
         }
-        return settings.layouts ? settings.layouts[index] : undefined;
+        return settings.layouts ? settings.layouts[root.activeLayoutIndex()] : undefined;
     }
 
     // Push each screen's layout into KWin's custom tiles so that KWin's native
