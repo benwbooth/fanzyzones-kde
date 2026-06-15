@@ -497,6 +497,25 @@ Item {
             root.setActiveLayout(action.layout || 0);
         } else if (action.action === "snap") {
             root.moveClientToLayoutZone(root.targetWindow(), action.layout || 0, action.zone || 0);
+        } else if (action.action === "snapZone") {
+            root.snapActiveWindowToZone(action.zone || 0);
+        } else if (action.action === "useLayout") {
+            root.switchLayout(action.layout || 0);
+        } else if (action.action === "nextLayout") {
+            root.cycleLayout(1);
+        } else if (action.action === "prevLayout") {
+            root.cycleLayout(-1);
+        } else if (action.action === "nextZone") {
+            root.cycleActiveWindow(1);
+        } else if (action.action === "prevZone") {
+            root.cycleActiveWindow(-1);
+        } else if (action.action === "snapFocused") {
+            root.snapClientToClosestZone(root.targetWindow());
+        } else if (action.action === "snapAll") {
+            root.snapAllWindows();
+        } else if (action.action === "toggleOverlay") {
+            if (root.moving)
+                root.overlayForced = !root.overlayForced;
         }
 
         root.clearPendingAction();
@@ -967,82 +986,6 @@ Item {
         text: "FanzyZones: Process pending action"
         sequence: "Meta+Ctrl+Alt+Shift+F12"
         onActivated: root.processPendingAction()
-    }
-
-    ShortcutHandler {
-        name: "FanzyZones: Snap window to next zone"
-        text: "FanzyZones: Snap window to next zone"
-        sequence: "Ctrl+Alt+Right"
-        onActivated: root.cycleActiveWindow(1)
-    }
-
-    ShortcutHandler {
-        name: "FanzyZones: Snap window to previous zone"
-        text: "FanzyZones: Snap window to previous zone"
-        sequence: "Ctrl+Alt+Left"
-        onActivated: root.cycleActiveWindow(-1)
-    }
-
-    ShortcutHandler {
-        name: "FanzyZones: Toggle drag overlay"
-        text: "FanzyZones: Toggle drag overlay"
-        sequence: "Ctrl+Alt+C"
-        onActivated: {
-            if (moving)
-                overlayForced = !overlayForced;
-        }
-    }
-
-    ShortcutHandler {
-        name: "FanzyZones: Snap focused window"
-        text: "FanzyZones: Snap focused window"
-        sequence: "Meta+Shift+Space"
-        onActivated: root.snapClientToClosestZone(root.targetWindow())
-    }
-
-    ShortcutHandler {
-        name: "FanzyZones: Snap every window"
-        text: "FanzyZones: Snap every window"
-        sequence: "Meta+Space"
-        onActivated: root.snapAllWindows()
-    }
-
-    ShortcutHandler {
-        name: "FanzyZones: Activate next layout"
-        text: "FanzyZones: Activate next layout"
-        sequence: "Meta+Shift+PgDown"
-        onActivated: root.cycleLayout(1)
-    }
-
-    ShortcutHandler {
-        name: "FanzyZones: Activate previous layout"
-        text: "FanzyZones: Activate previous layout"
-        sequence: "Meta+Shift+PgUp"
-        onActivated: root.cycleLayout(-1)
-    }
-
-    Repeater {
-        model: [1, 2, 3, 4, 5, 6, 7, 8, 9]
-        delegate: Item {
-            ShortcutHandler {
-                name: "FanzyZones: Snap window to zone " + modelData
-                text: "FanzyZones: Snap window to zone " + modelData
-                sequence: "Meta+Ctrl+" + modelData
-                onActivated: root.snapActiveWindowToZone(modelData - 1)
-            }
-        }
-    }
-
-    Repeater {
-        model: [1, 2, 3, 4, 5, 6, 7, 8, 9]
-        delegate: Item {
-            ShortcutHandler {
-                name: "FanzyZones: Use layout " + modelData
-                text: "FanzyZones: Use layout " + modelData
-                sequence: "Meta+Shift+" + modelData
-                onActivated: root.switchLayout(modelData - 1)
-            }
-        }
     }
 
 }
