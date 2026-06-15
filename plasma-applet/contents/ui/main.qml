@@ -172,7 +172,13 @@ PlasmoidItem {
 
     function openCreateLayout() {
         main.closeMenu();
-        editorWindow.open({ "name": main.nextCustomLayoutName(), "id": "", "isBuiltIn": false, "zones": [] });
+        // Seed the new layout with a copy of the currently selected layout's
+        // zones so the user edits a copy rather than starting from scratch.
+        const src = settings.layouts ? settings.layouts[main.menuActiveLayout()] : undefined;
+        const zones = (src && src.zones) ? src.zones.map(function(z) {
+            return { "x": z.x, "y": z.y, "width": z.width, "height": z.height };
+        }) : [];
+        editorWindow.open({ "name": main.nextCustomLayoutName(), "id": "", "isBuiltIn": false, "zones": zones });
     }
 
     function openEditLayout(index) {
@@ -425,7 +431,8 @@ PlasmoidItem {
                             }
 
                             onDeleteLayout: function(index) {
-                                main.invokeAction({"action": "deleteLayout", "layout": index});
+                                // Keep the menu open so layouts can be managed in a row.
+                                main.invokeAction({"action": "deleteLayout", "layout": index}, false);
                             }
                         }
                     }
