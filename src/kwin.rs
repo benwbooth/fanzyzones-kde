@@ -44,24 +44,26 @@ impl KwinController {
     }
 
     pub fn from_environment() -> Result<Self> {
-        let script_dir = if let Ok(path) = env::var("FANZYZONES_KDE_KWIN_SCRIPT_DIR") {
-            PathBuf::from(path)
-        } else {
+        if let Ok(path) = env::var("FANZYZONES_KDE_KWIN_SCRIPT_DIR") {
+            return Ok(Self::new(PathBuf::from(path)));
+        }
+
+        // A self-contained binary unpacks here; then the Nix-install layout, then
+        // a repo checkout.
+        let candidates = [
+            crate::resources::resource_root().join("kwin-script"),
             env::current_exe()
                 .ok()
                 .and_then(|exe| exe.parent().map(Path::to_path_buf))
                 .map(|bin| bin.join("../share/fanzyzones-kde/kwin-script"))
-                .unwrap_or_else(|| PathBuf::from("kwin-script"))
-        };
-
-        let fallback = env::current_dir()?.join("kwin-script");
-        let script_dir = if script_dir.exists() {
-            script_dir
-        } else if fallback.exists() {
-            fallback
-        } else {
-            script_dir
-        };
+                .unwrap_or_default(),
+            env::current_dir().ok().map(|d| d.join("kwin-script")).unwrap_or_default(),
+        ];
+        let script_dir = candidates
+            .iter()
+            .find(|path| path.exists())
+            .cloned()
+            .unwrap_or_else(|| candidates[0].clone());
 
         Ok(Self::new(script_dir))
     }

@@ -1,6 +1,7 @@
 mod config;
 mod kwin;
 mod layout;
+mod resources;
 mod shortcuts;
 
 use anyhow::{Context, Result};
@@ -288,6 +289,11 @@ fn current_applet_state_json(status: impl Into<String>) -> Result<String> {
 }
 
 async fn install_plasma_integration() -> Result<()> {
+    // A self-contained binary carries the plasmoid/KWin-script/icons embedded;
+    // unpack them so the resolvers (and kpackagetool) have real directories.
+    if resources::is_self_contained() {
+        resources::extract_all()?;
+    }
     install_icon_theme()?;
     install_cli_wrapper()?;
     remove_daemon_service().await;
@@ -959,6 +965,7 @@ async fn open_url(url: &str) -> Result<()> {
 fn plasmoid_package_path() -> Result<PathBuf> {
     let candidates = [
         env::var_os("FANZYZONES_KDE_PLASMOID_DIR").map(PathBuf::from),
+        Some(resources::resource_root().join("plasma-applet")),
         env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
@@ -988,6 +995,7 @@ fn tray_icon_source_path() -> Option<PathBuf> {
         env::var_os("FANZYZONES_KDE_ICON_THEME_DIR")
             .map(PathBuf::from)
             .map(|dir| dir.join("hicolor/scalable/status/fanzyzones-kde.svg")),
+        Some(resources::resource_root().join("icons/hicolor/scalable/status/fanzyzones-kde.svg")),
         env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
@@ -1003,6 +1011,7 @@ fn tray_icon_source_path() -> Option<PathBuf> {
 fn icon_theme_dir_path() -> Option<PathBuf> {
     let candidates = [
         env::var_os("FANZYZONES_KDE_ICON_THEME_DIR").map(PathBuf::from),
+        Some(resources::resource_root().join("icons")),
         env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(Path::to_path_buf))
