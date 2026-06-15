@@ -66,7 +66,10 @@ pub struct Settings {
     pub outer_padding: i32,
     #[serde(default = "default_true")]
     pub enable_zone_overlay: bool,
-    #[serde(default = "default_true")]
+    // Off by default: the drag-time layout-picker strip is easy to trigger by
+    // accident, which silently changes the active layout and scatters windows
+    // across layouts. Opt in via settings to get the FancyZones-style picker.
+    #[serde(default)]
     pub enable_zone_selector: bool,
     #[serde(default)]
     pub enable_edge_snapping: bool,
@@ -141,6 +144,9 @@ fn default_skip_classes() -> Vec<String> {
 }
 
 fn default_modifiers() -> Vec<ModifierKey> {
+    // Retained for the keyboard/auto-snap paths only. Drag-snapping is handled
+    // natively by KWin tiling (Shift+drag) now that FanzyZones syncs the active
+    // layout into KWin's custom tiles, so this no longer governs drag.
     vec![ModifierKey::Shift]
 }
 
@@ -161,7 +167,7 @@ impl Default for Settings {
             gap: default_gap(),
             outer_padding: default_outer_padding(),
             enable_zone_overlay: true,
-            enable_zone_selector: true,
+            enable_zone_selector: false,
             enable_edge_snapping: false,
             remember_window_geometries: true,
             keyboard_shortcuts_enabled: true,

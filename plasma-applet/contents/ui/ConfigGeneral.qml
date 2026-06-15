@@ -64,17 +64,13 @@ KCM.SimpleKCM {
 
     function applyToControls(s) {
         const mode = s.snap_mode || "modifier";
-        snapModifier.checked = mode === "modifier";
         snapAuto.checked = mode === "auto";
-        const mods = s.modifiers || ["shift"];
-        modShift.checked = mods.indexOf("shift") >= 0;
-        modCtrl.checked = mods.indexOf("control") >= 0;
-        modAlt.checked = mods.indexOf("alt") >= 0;
-        modMeta.checked = mods.indexOf("meta") >= 0;
+        snapShiftDrag.checked = mode !== "auto";
         gapSpin.value = s.gap || 0;
         paddingSpin.value = s.outer_padding || 0;
         shortcutsCheck.checked = s.keyboard_shortcuts_enabled !== false;
         zoneNumbersCheck.checked = s.show_zone_numbers !== false;
+        layoutPickerCheck.checked = s.enable_zone_selector === true;
         layoutBottomUpCheck.checked = s.layout_menu_bottom_up !== false;
         opacitySlider.value = s.overlay_opacity !== undefined ? s.overlay_opacity : 0.35;
         if (s.highlight_color)
@@ -90,12 +86,12 @@ KCM.SimpleKCM {
     // Called by the config dialog when Apply/OK is pressed.
     function saveConfig() {
         const patch = {
-            "snap_mode": snapModifier.checked ? "modifier" : "auto",
-            "modifiers": currentModifiers(),
+            "snap_mode": snapAuto.checked ? "auto" : "modifier",
             "gap": gapSpin.value,
             "outer_padding": paddingSpin.value,
             "keyboard_shortcuts_enabled": shortcutsCheck.checked,
             "show_zone_numbers": zoneNumbersCheck.checked,
+            "enable_zone_selector": layoutPickerCheck.checked,
             "layout_menu_bottom_up": layoutBottomUpCheck.checked,
             "overlay_opacity": opacitySlider.value,
             "highlight_color": {
@@ -112,39 +108,28 @@ KCM.SimpleKCM {
         page.unsavedChanges = false;
     }
 
-    function currentModifiers() {
-        const m = [];
-        if (modShift.checked) m.push("shift");
-        if (modCtrl.checked) m.push("control");
-        if (modAlt.checked) m.push("alt");
-        if (modMeta.checked) m.push("meta");
-        return m.length > 0 ? m : ["shift"];
-    }
-
     Kirigami.FormLayout {
         QQC2.ButtonGroup { id: snapGroup }
 
         QQC2.RadioButton {
-            id: snapModifier
+            id: snapShiftDrag
             Kirigami.FormData.label: i18n("Snap mode:")
             QQC2.ButtonGroup.group: snapGroup
-            text: i18n("Hold a modifier and drag")
+            text: i18n("Hold Shift and drag (KWin tiling)")
             onToggled: page.markDirty()
         }
 
         QQC2.RadioButton {
             id: snapAuto
             QQC2.ButtonGroup.group: snapGroup
-            text: i18n("Auto-snap on drag")
+            text: i18n("Auto-snap on drag (no modifier)")
             onToggled: page.markDirty()
         }
 
-        RowLayout {
-            Kirigami.FormData.label: i18n("Drag modifiers:")
-            QQC2.CheckBox { id: modShift; text: i18n("Shift"); onToggled: page.markDirty() }
-            QQC2.CheckBox { id: modCtrl; text: i18n("Ctrl"); onToggled: page.markDirty() }
-            QQC2.CheckBox { id: modAlt; text: i18n("Alt"); onToggled: page.markDirty() }
-            QQC2.CheckBox { id: modMeta; text: i18n("Meta"); onToggled: page.markDirty() }
+        QQC2.Label {
+            text: i18n("Shift+drag always tiles into the active layout across every\nmonitor using KWin's built-in tiling. Auto-snap instead shows\nthe FanzyZones overlay and snaps on any drag, no key held.")
+            wrapMode: Text.WordWrap
+            opacity: 0.7
         }
 
         Item { Kirigami.FormData.isSection: true }
@@ -178,6 +163,12 @@ KCM.SimpleKCM {
             id: zoneNumbersCheck
             Kirigami.FormData.label: i18n("Overlay:")
             text: i18n("Show zone numbers")
+            onToggled: page.markDirty()
+        }
+
+        QQC2.CheckBox {
+            id: layoutPickerCheck
+            text: i18n("Show layout picker bar while dragging (auto-snap)")
             onToggled: page.markDirty()
         }
 

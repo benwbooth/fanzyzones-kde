@@ -128,7 +128,7 @@ Item {
             "gap": 0,
             "outer_padding": 0,
             "enable_zone_overlay": true,
-            "enable_zone_selector": true,
+            "enable_zone_selector": false,
             "enable_edge_snapping": false,
             "remember_window_geometries": true,
             "keyboard_shortcuts_enabled": true,
@@ -311,6 +311,7 @@ Item {
     // through the daemon so the tray menu/config reflect it.
     function switchLayout(index) {
         root.setActiveLayout(index);
+        root.syncKwinTiles();
         root.flashLayoutPreview();
         root.persistActiveLayout(index);
     }
@@ -369,6 +370,205 @@ Item {
 
     function contains(rect, point) {
         return point.x >= rect.x && point.x <= rect.x + rect.width && point.y >= rect.y && point.y <= rect.y + rect.height;
+    }
+
+    // ----------------------------------------------------------------------
+    // KWin native tiling integration.
+    //
+    // Rather than fight KWin's built-in Shift+drag tiling (which has no
+    // off-switch), we push the active FanzyZones layout *into* KWin's custom
+    // tiles for every screen. Dragging a window with Shift then snaps into our
+    // zones using KWin's own overlay and multi-window edge resizing.
+    //
+    // KWin tiles are a recursive split tree (guillotine cuts), so we decompose
+    // the layout's zones into nested column/row slices and replay them with the
+    // scriptable tile API: tile.split(direction), tile.relativeGeometry (parent
+    // relative), tile.remove(). Split directions strictly alternate because we
+    // slice maximally at each level, so split() never flattens unexpectedly.
+    // ----------------------------------------------------------------------
+    readonly property real tileEps: 0.001
+    // In the default "modifier" mode, FanzyZones drives KWin's built-in tiles
+    // and lets KWin handle Shift+drag natively (no FanzyZones drag overlay). In
+    // "auto" mode the user wants windows to snap on any drag without holding a
+    // modifier, which KWin's Shift-only tiling can't do, so we fall back to
+    // FanzyZones' own overlay/auto-snap. KWin tiles stay synced either way, so
+    // Shift+drag keeps working even in auto mode.
+    readonly property bool useKwinNativeTiling: settings.snap_mode !== "auto"
+
+    function tileScreens() {
+        if (Workspace.screens && Workspace.screens.length > 0)
+            return Workspace.screens;
+        if (Workspace.activeScreen)
+            return [Workspace.activeScreen];
+        return [];
+    }
+
+    function clearTile(tile) {
+        let guard = 0;
+        while (tile.tiles.length > 0 && guard++ < 256) {
+            const child = tile.tiles[tile.tiles.length - 1];
+            if (child.tiles.length > 0)
+                root.clearTile(child);
+            if (child.canBeRemoved)
+                child.remove();
+            else
+                break;
+        }
+    }
+
+    // Interior positions along `axis` ('x'|'y') that cleanly cut every zone in
+    // [lo, hi] without slicing through any zone's interior.
+    function tileCleanCuts(zones, lo, hi, axis) {
+        const edges = {};
+        for (let i = 0; i < zones.length; i++) {
+            const z = zones[i];
+            const a = axis === 'x' ? z.x : z.y;
+            const b = axis === 'x' ? z.x + z.width : z.y + z.height;
+            if (a > lo + tileEps && a < hi - tileEps)
+                edges[a.toFixed(5)] = a;
+            if (b > lo + tileEps && b < hi - tileEps)
+                edges[b.toFixed(5)] = b;
+        }
+        const cuts = [];
+        for (const key in edges) {
+            const c = edges[key];
+            let straddle = false;
+            for (let j = 0; j < zones.length; j++) {
+                const zz = zones[j];
+                const za = axis === 'x' ? zz.x : zz.y;
+                const zb = axis === 'x' ? zz.x + zz.width : zz.y + zz.height;
+                if (za < c - tileEps && c < zb - tileEps) {
+                    straddle = true;
+                    break;
+                }
+            }
+            if (!straddle)
+                cuts.push(c);
+        }
+        cuts.sort(function(p, q) { return p - q; });
+        return cuts;
+    }
+
+    // Partition zones into slices along `axis`; returns [{rect, zones}, ...] or
+    // null when no clean cut exists in that direction.
+    function tileSlice(zones, box, axis) {
+        const lo = axis === 'x' ? box.x : box.y;
+        const hi = axis === 'x' ? box.x + box.w : box.y + box.h;
+        const cuts = root.tileCleanCuts(zones, lo, hi, axis);
+        if (cuts.length === 0)
+            return null;
+        const bounds = [lo].concat(cuts).concat([hi]);
+        const parts = [];
+        for (let i = 0; i < bounds.length - 1; i++) {
+            const a = bounds[i];
+            const b = bounds[i + 1];
+            const sub = [];
+            for (let j = 0; j < zones.length; j++) {
+                const z = zones[j];
+                const mid = axis === 'x' ? z.x + z.width / 2 : z.y + z.height / 2;
+                if (mid > a - tileEps && mid < b + tileEps)
+                    sub.push(z);
+            }
+            const rect = axis === 'x'
+                ? { "x": a, "y": box.y, "w": b - a, "h": box.h }
+                : { "x": box.x, "y": a, "w": box.w, "h": b - a };
+            parts.push({ "rect": rect, "zones": sub });
+        }
+        return parts;
+    }
+
+    // KWin insets every tile by `padding` on all sides, so the gap between two
+    // adjacent tiles is 2*padding. Map the FanzyZones gap onto it (gap=0 → tiles
+    // flush to each other and the screen edge). KWin's default tile padding is
+    // 4px, which is why zones showed gaps even with our gap at 0.
+    function tilePadding() {
+        return Math.max(0, (settings.gap || 0) / 2);
+    }
+
+    function tileRelative(rect, parent) {
+        return Qt.rect(
+            (rect.x - parent.x) / parent.w,
+            (rect.y - parent.y) / parent.h,
+            rect.w / parent.w,
+            rect.h / parent.h
+        );
+    }
+
+    // Recursively build `zones` (which tile `box`, in 0..1 screen coords) into
+    // `tile`, which currently is a single leaf covering `box`.
+    function tileBuild(tile, zones, box) {
+        if (zones.length <= 1)
+            return;
+        // Prefer vertical cuts (columns) then horizontal (rows). KWin layout
+        // direction: 1 = Horizontal (columns), 2 = Vertical (rows).
+        let parts = root.tileSlice(zones, box, 'x');
+        let dir = 1;
+        if (!(parts && parts.length >= 2)) {
+            parts = root.tileSlice(zones, box, 'y');
+            dir = 2;
+        }
+        if (!parts || parts.length < 2)
+            return; // non-guillotine remainder: leave as a single tile
+        tile.split(dir);
+        while (tile.tiles.length < parts.length)
+            tile.tiles[tile.tiles.length - 1].split(dir);
+        const pad = root.tilePadding();
+        for (let i = 0; i < parts.length && i < tile.tiles.length; i++) {
+            tile.tiles[i].relativeGeometry = root.tileRelative(parts[i].rect, box);
+            tile.tiles[i].padding = pad;
+        }
+        for (let k = 0; k < parts.length && k < tile.tiles.length; k++)
+            root.tileBuild(tile.tiles[k], parts[k].zones, parts[k].rect);
+    }
+
+    // The scoped-layout key for a specific screen (mirrors layoutKey() but for
+    // an arbitrary output, so each monitor can resolve its own layout).
+    function tileScreenKey(screen) {
+        const parts = [];
+        if (settings.track_layout_per_screen && screen && screen.name)
+            parts.push(screen.name);
+        if (settings.track_layout_per_desktop && Workspace.currentDesktop)
+            parts.push(Workspace.currentDesktop.id || Workspace.currentDesktop.name);
+        return parts.join(":");
+    }
+
+    // The layout that should tile a given screen. With per-screen tracking each
+    // monitor keeps its own layout (like FancyZones); otherwise every monitor
+    // shares the active layout.
+    function layoutForScreen(screen) {
+        const key = root.tileScreenKey(screen);
+        let index;
+        if (key.length > 0) {
+            if (scopedLayouts[key] === undefined)
+                scopedLayouts[key] = currentLayout;
+            index = scopedLayouts[key];
+        } else {
+            index = root.activeLayoutIndex();
+        }
+        return settings.layouts ? settings.layouts[index] : undefined;
+    }
+
+    // Push each screen's layout into KWin's custom tiles so that KWin's native
+    // Shift+drag tiling snaps into our zones. Every connected monitor is tiled,
+    // and with per-screen tracking each one gets its own layout.
+    function syncKwinTiles() {
+        const screens = root.tileScreens();
+        for (let s = 0; s < screens.length; s++) {
+            const layout = root.layoutForScreen(screens[s]);
+            if (!layout || !layout.zones || layout.zones.length === 0)
+                continue;
+            try {
+                const tm = Workspace.tilingForScreen(screens[s]);
+                if (!tm || !tm.rootTile)
+                    continue;
+                const rootTile = tm.rootTile;
+                root.clearTile(rootTile);
+                rootTile.padding = root.tilePadding();
+                root.tileBuild(rootTile, layout.zones, { "x": 0, "y": 0, "w": 1, "h": 1 });
+            } catch (error) {
+                root.log("syncKwinTiles failed for screen " + s + ": " + error);
+            }
+        }
     }
 
     function modifierMask(name) {
@@ -601,6 +801,11 @@ Item {
         if (client.onInteractiveMoveResizeStarted) {
             client.onInteractiveMoveResizeStarted.connect(function() {
                 if (!root)
+                    return;
+                // Drag-snapping is delegated to KWin's native tiling (Shift+drag
+                // into the tiles we sync from the active layout), so FanzyZones
+                // no longer drives its own drag overlay or snap-on-release.
+                if (root.useKwinNativeTiling)
                     return;
                 if (root.isSkippedWindow(client) || !client.move)
                     return;
@@ -836,6 +1041,7 @@ Item {
 
     Component.onCompleted: {
         root.loadSettings();
+        root.syncKwinTiles();
         const all = root.windows();
         for (let i = 0; i < all.length; i++)
             root.handleNewWindow(all[i]);
@@ -844,6 +1050,18 @@ Item {
                 if (!root)
                     return;
                 root.handleNewWindow(client);
+            });
+        // Rebuild tiles when the screen layout changes (monitor hotplug, scale
+        // or resolution change) so newly-present outputs get our zones.
+        if (Workspace.screensChanged)
+            Workspace.screensChanged.connect(function() {
+                if (root)
+                    root.syncKwinTiles();
+            });
+        if (Workspace.virtualScreenSizeChanged)
+            Workspace.virtualScreenSizeChanged.connect(function() {
+                if (root)
+                    root.syncKwinTiles();
             });
         if (Workspace.currentDesktopChanged)
             Workspace.currentDesktopChanged.connect(function(oldDesktop) {
