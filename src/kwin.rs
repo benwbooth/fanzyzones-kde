@@ -103,6 +103,20 @@ impl KwinController {
         Ok(result.stdout.lines().any(|line| line.contains(SCRIPT_ID)))
     }
 
+    /// Turn off KWin's built-in drag-to-edge quick tiling/maximize so it does
+    /// not fight FanzyZones' own Shift+drag snapping.
+    pub async fn disable_builtin_tiling(&self) -> Result<()> {
+        for key in ["ElectricBorderTiling", "ElectricBorderMaximize"] {
+            run_checked(
+                "kwriteconfig6",
+                &["--file", "kwinrc", "--group", "Windows", "--key", key, "false"],
+            )
+            .await
+            .with_context(|| format!("disable KWin {key}"))?;
+        }
+        Ok(())
+    }
+
     pub async fn write_settings(&self, settings: &Settings) -> Result<()> {
         let json = settings.compact_json()?;
         self.write_script_config("settingsJson", &json)
@@ -215,6 +229,23 @@ impl KwinController {
             )
             .await;
         }
+
+        // With the script unloaded, drop global shortcuts whose actions are no
+        // longer registered (stale entries from renamed/removed shortcuts or
+        // other uninstalled tiling scripts). This lets the reload below register
+        // our shortcuts fresh so their default keys actually bind.
+        let _ = run(
+            "busctl",
+            &[
+                "--user",
+                "call",
+                "org.kde.kglobalaccel",
+                "/component/kwin",
+                "org.kde.kglobalaccel.Component",
+                "cleanUp",
+            ],
+        )
+        .await;
 
         run_checked(
             "busctl",
@@ -522,9 +553,14 @@ Item {{
     pub async fn sync(&self, settings: &Settings, reload: bool) -> Result<()> {
         self.install_or_upgrade().await?;
         self.write_settings(settings).await?;
+        self.disable_builtin_tiling().await?;
         self.enable_script().await?;
-        if reload && self.restart_script().await.is_err() {
-            self.reload_kwin().await?;
+        if reload {
+            if self.restart_script().await.is_err() {
+                self.reload_kwin().await?;
+            }
+            // Apply the kwinrc window-behaviour change (disabled tiling).
+            let _ = self.reload_kwin().await;
         }
         Ok(())
     }
