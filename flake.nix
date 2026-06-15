@@ -22,8 +22,14 @@
         # package for Nix users; the portable static-musl artifact for other
         # distros is produced by the CI workflow (cargo --target musl), which is
         # far less friction than coaxing buildRustPackage onto pkgsStatic.
+        # musl cross toolchain so `cargo build --target x86_64-unknown-linux-musl`
+        # produces the portable static binary locally (same as the CI release).
+        muslPkgs = pkgs.pkgsCross.musl64;
+        muslCc = "${muslPkgs.stdenv.cc}/bin/${muslPkgs.stdenv.cc.targetPrefix}cc";
+
         rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           extensions = [ "rust-src" "rust-analyzer" ];
+          targets = [ "x86_64-unknown-linux-musl" ];
         };
 
         # CLI tools the wrapper puts on PATH at runtime (the binary shells out to
@@ -81,6 +87,10 @@
           ]);
 
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+
+          # Static musl release build: cargo build --release --target x86_64-unknown-linux-musl
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = muslCc;
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS = "-C target-feature=+crt-static";
 
           shellHook = ''
             echo "FanzyZones KDE development environment"
