@@ -1,31 +1,23 @@
-//! Global shortcuts registered by the daemon under a dedicated "fanzyzones"
-//! KGlobalAccel component, so they can be rebound from the app's own settings
-//! dialog (and appear grouped under "FanzyZones" in System Settings).
-//!
-//! On a key press KGlobalAccel emits `globalShortcutPressed`; we invoke the
-//! matching keyless handler in the persistent KWin script by name, so the
-//! action runs with full runtime state.
+//! Read and rebind the FanzyZones global shortcuts. The shortcuts themselves
+//! are registered (with default keys) and handled by the KWin script, under the
+//! "kwin" KGlobalAccel component. Because the KWin script keeps those actions
+//! alive, any process may rebind them via `setForeignShortcut` — so the in-app
+//! editor works without a long-running daemon; it just shells out to these CLI
+//! commands.
 
 use anyhow::{Context, Result};
-use futures_util::StreamExt;
-
-use crate::config::Settings;
 
 const KGA_SERVICE: &str = "org.kde.kglobalaccel";
-const KGA_PATH: &str = "/kglobalaccel";
-const KGA_IFACE: &str = "org.kde.KGlobalAccel";
-const COMPONENT: &str = "fanzyzones";
-const COMPONENT_FRIENDLY: &str = "FanzyZones";
-const COMPONENT_PATH: &str = "/component/fanzyzones";
-const COMPONENT_IFACE: &str = "org.kde.kglobalaccel.Component";
+const KWIN_COMPONENT: &str = "kwin";
+const KWIN_COMPONENT_FRIENDLY: &str = "KWin";
 
 const META: i32 = 0x1000_0000;
 const CTRL: i32 = 0x0400_0000;
 const ALT: i32 = 0x0800_0000;
 const SHIFT: i32 = 0x0200_0000;
 const KEY_1: i32 = 0x31;
-const KEY_SPACE: i32 = 0x20;
 const KEY_C: i32 = 0x43;
+const KEY_SPACE: i32 = 0x20;
 const KEY_LEFT: i32 = 0x0100_0012;
 const KEY_RIGHT: i32 = 0x0100_0014;
 const KEY_UP: i32 = 0x0100_0013;
@@ -33,29 +25,27 @@ const KEY_DOWN: i32 = 0x0100_0015;
 const KEY_PGUP: i32 = 0x0100_0016;
 const KEY_PGDOWN: i32 = 0x0100_0017;
 
-/// SetShortcut flags: SetPresent (2) | NoAutoloading (4).
-const SET_FLAGS: u32 = 6;
-
 pub struct ShortcutDef {
-    pub id: String,
+    pub id: &'static str,
     pub friendly: String,
     pub default_key: i32,
 }
 
-/// The full set of FanzyZones shortcut actions with their default keys.
+/// The FanzyZones shortcut actions in display order. `friendly` matches the
+/// KWin-script ShortcutHandler name without the "FanzyZones: " prefix.
 pub fn shortcut_defs() -> Vec<ShortcutDef> {
     let mut list = Vec::new();
     for n in 1..=9 {
         list.push(ShortcutDef {
-            id: format!("snap-zone-{n}"),
+            id: leak(format!("snap-zone-{n}")),
             friendly: format!("Snap window to zone {n}"),
             default_key: META | CTRL | (KEY_1 + n - 1),
         });
     }
     for n in 1..=9 {
         list.push(ShortcutDef {
-            id: format!("use-layout-{n}"),
-            friendly: format!("Switch to layout {n}"),
+            id: leak(format!("use-layout-{n}")),
+            friendly: format!("Use layout {n}"),
             default_key: META | SHIFT | (KEY_1 + n - 1),
         });
     }
@@ -68,40 +58,53 @@ pub fn shortcut_defs() -> Vec<ShortcutDef> {
         ("snap-all", "Snap all windows", META | KEY_SPACE),
         ("toggle-overlay", "Toggle zone overlay", CTRL | ALT | KEY_C),
     ];
-    for (id, friendly, key) in fixed {
-        list.push(ShortcutDef {
-            id: (*id).to_string(),
-            friendly: (*friendly).to_string(),
-            default_key: *key,
-        });
+    for (id, friendly, default_key) in fixed {
+        list.push(ShortcutDef { id, friendly: (*friendly).to_string(), default_key: *default_key });
     }
     list
 }
 
-/// The effective key for an action: a user override if set, else the default.
-fn effective_key(def: &ShortcutDef, settings: &Settings) -> i32 {
-    settings
-        .shortcut_overrides
-        .get(&def.id)
-        .and_then(|seq| string_to_keycode(seq))
-        .unwrap_or(def.default_key)
+/// Force-apply default keys for any FanzyZones shortcut that is currently
+/// unbound. Run after (re)installing so the KWin-script shortcuts bind their
+/// defaults even when KGlobalAccel cached a stale empty state for the action.
+/// Existing user bindings (non-empty) are left untouched.
+pub async fn apply_default_bindings() -> Result<()> {
+    let connection = zbus::Connection::session().await.context("connect to session bus")?;
+    let current = read_shortcuts_conn(&connection).await.unwrap_or_default();
+    for def in shortcut_defs() {
+        let bound = current
+            .iter()
+            .find(|(id, _, _)| id == def.id)
+            .map(|(_, _, seq)| !seq.is_empty())
+            .unwrap_or(false);
+        if !bound {
+            let _ = set_foreign_conn(&connection, &def.friendly, &keycode_to_string(def.default_key)).await;
+        }
+    }
+    Ok(())
+}
+
+fn leak(s: String) -> &'static str {
+    Box::leak(s.into_boxed_str())
+}
+
+fn action_name(friendly: &str) -> String {
+    format!("FanzyZones: {friendly}")
 }
 
 fn key_name(key: i32) -> Option<String> {
-    let name = match key {
-        0x30..=0x39 => ((key as u8) as char).to_string(),
-        0x41..=0x5a => ((key as u8) as char).to_string(),
-        KEY_SPACE => "Space".to_string(),
-        KEY_LEFT => "Left".to_string(),
-        KEY_RIGHT => "Right".to_string(),
-        KEY_UP => "Up".to_string(),
-        KEY_DOWN => "Down".to_string(),
-        KEY_PGUP => "PgUp".to_string(),
-        KEY_PGDOWN => "PgDown".to_string(),
+    Some(match key {
+        0x30..=0x39 | 0x41..=0x5a => ((key as u8) as char).to_string(),
+        KEY_SPACE => "Space".into(),
+        KEY_LEFT => "Left".into(),
+        KEY_RIGHT => "Right".into(),
+        KEY_UP => "Up".into(),
+        KEY_DOWN => "Down".into(),
+        KEY_PGUP => "PgUp".into(),
+        KEY_PGDOWN => "PgDown".into(),
         0x0100_0030..=0x0100_003b => format!("F{}", key - 0x0100_0030 + 1),
         _ => return None,
-    };
-    Some(name)
+    })
 }
 
 /// Render a Qt keycode as a portable sequence string ("Meta+Ctrl+1").
@@ -110,18 +113,10 @@ pub fn keycode_to_string(key: i32) -> String {
         return String::new();
     }
     let mut parts = Vec::new();
-    if key & META != 0 {
-        parts.push("Meta".to_string());
-    }
-    if key & CTRL != 0 {
-        parts.push("Ctrl".to_string());
-    }
-    if key & ALT != 0 {
-        parts.push("Alt".to_string());
-    }
-    if key & SHIFT != 0 {
-        parts.push("Shift".to_string());
-    }
+    if key & META != 0 { parts.push("Meta".to_string()); }
+    if key & CTRL != 0 { parts.push("Ctrl".to_string()); }
+    if key & ALT != 0 { parts.push("Alt".to_string()); }
+    if key & SHIFT != 0 { parts.push("Shift".to_string()); }
     match key_name(key & 0x01FF_FFFF) {
         Some(name) => parts.push(name),
         None => return String::new(),
@@ -129,8 +124,7 @@ pub fn keycode_to_string(key: i32) -> String {
     parts.join("+")
 }
 
-/// Parse a portable sequence string ("Meta+Ctrl+1") into a Qt keycode.
-/// Order-independent. Returns None for an empty/unparseable string.
+/// Parse a portable sequence string into a Qt keycode (order-independent).
 pub fn string_to_keycode(sequence: &str) -> Option<i32> {
     let sequence = sequence.trim();
     if sequence.is_empty() {
@@ -139,8 +133,7 @@ pub fn string_to_keycode(sequence: &str) -> Option<i32> {
     let mut mods = 0;
     let mut base: Option<i32> = None;
     for token in sequence.split('+') {
-        let token = token.trim();
-        match token.to_ascii_lowercase().as_str() {
+        match token.trim().to_ascii_lowercase().as_str() {
             "meta" | "super" => mods |= META,
             "ctrl" | "control" => mods |= CTRL,
             "alt" => mods |= ALT,
@@ -155,7 +148,7 @@ pub fn string_to_keycode(sequence: &str) -> Option<i32> {
             other => {
                 if other.len() == 1 {
                     let c = other.chars().next().unwrap().to_ascii_uppercase();
-                    if c.is_ascii_digit() || c.is_ascii_alphabetic() {
+                    if c.is_ascii_alphanumeric() {
                         base = Some(c as i32);
                     }
                 } else if let Some(num) = other.strip_prefix('f') {
@@ -171,93 +164,71 @@ pub fn string_to_keycode(sequence: &str) -> Option<i32> {
     base.map(|key| key | mods)
 }
 
-/// Effective shortcuts as (id, friendly, sequence-string), for the settings UI.
-pub fn effective_shortcuts(settings: &Settings) -> Vec<(String, String, String)> {
-    shortcut_defs()
-        .into_iter()
-        .map(|def| {
-            let key = effective_key(&def, settings);
-            (def.id, def.friendly, keycode_to_string(key))
-        })
-        .collect()
+type ShortcutInfo = (String, String, String, String, String, String, Vec<i32>, Vec<i32>);
+
+async fn read_shortcuts_conn(connection: &zbus::Connection) -> Result<Vec<(String, String, String)>> {
+    let reply = connection
+        .call_method(
+            Some(KGA_SERVICE),
+            "/component/kwin",
+            Some("org.kde.kglobalaccel.Component"),
+            "allShortcutInfos",
+            &(),
+        )
+        .await
+        .context("query KGlobalAccel shortcuts")?;
+    let infos: Vec<ShortcutInfo> = reply.body().deserialize().unwrap_or_default();
+
+    let mut out = Vec::new();
+    for def in shortcut_defs() {
+        let name = action_name(&def.friendly);
+        let key = infos
+            .iter()
+            .find(|info| info.0 == name)
+            .and_then(|info| info.6.first().copied())
+            .unwrap_or(0);
+        out.push((def.id.to_string(), def.friendly.clone(), keycode_to_string(key)));
+    }
+    Ok(out)
 }
 
-async fn register_one(
-    connection: &zbus::Connection,
-    id: &str,
-    friendly: &str,
-    key: i32,
-) -> Result<()> {
+async fn set_foreign_conn(connection: &zbus::Connection, friendly: &str, sequence: &str) -> Result<()> {
+    let name = action_name(friendly);
     let action_id = vec![
-        COMPONENT.to_string(),
-        id.to_string(),
-        COMPONENT_FRIENDLY.to_string(),
-        friendly.to_string(),
+        KWIN_COMPONENT.to_string(),
+        name.clone(),
+        KWIN_COMPONENT_FRIENDLY.to_string(),
+        name,
     ];
-    connection
-        .call_method(Some(KGA_SERVICE), KGA_PATH, Some(KGA_IFACE), "doRegister", &(action_id.clone(),))
-        .await
-        .with_context(|| format!("doRegister {id}"))?;
-    let keys = if key == 0 { Vec::new() } else { vec![key] };
+    let keys: Vec<i32> = string_to_keycode(sequence).into_iter().collect();
     connection
         .call_method(
             Some(KGA_SERVICE),
-            KGA_PATH,
-            Some(KGA_IFACE),
-            "setShortcut",
-            &(action_id, keys, SET_FLAGS),
+            "/kglobalaccel",
+            Some("org.kde.KGlobalAccel"),
+            "setForeignShortcut",
+            &(action_id, keys),
         )
         .await
-        .with_context(|| format!("setShortcut {id}"))?;
+        .context("setForeignShortcut")?;
     Ok(())
 }
 
-/// Apply a single shortcut binding at runtime (used by the settings dialog).
-pub async fn apply_shortcut(connection: &zbus::Connection, id: &str, key: i32) -> Result<()> {
+/// Read the current bindings for all FanzyZones shortcuts as
+/// (id, friendly, sequence-string).
+pub async fn read_shortcuts() -> Result<Vec<(String, String, String)>> {
+    let connection = zbus::Connection::session().await.context("connect to session bus")?;
+    read_shortcuts_conn(&connection).await
+}
+
+/// Rebind one FanzyZones shortcut (by id) to the given sequence string. An empty
+/// sequence unbinds it.
+pub async fn set_foreign_shortcut(id: &str, sequence: &str) -> Result<()> {
     let friendly = shortcut_defs()
         .into_iter()
         .find(|d| d.id == id)
         .map(|d| d.friendly)
-        .unwrap_or_else(|| id.to_string());
-    register_one(connection, id, &friendly, key).await
-}
-
-/// Register all FanzyZones global shortcuts (honouring user overrides) and
-/// forward presses to the KWin script. Runs until the connection drops.
-pub async fn register_and_listen(connection: zbus::Connection) -> Result<()> {
-    let settings = crate::config::load_or_default().unwrap_or_default();
-    let defs = shortcut_defs();
-    for def in &defs {
-        let key = effective_key(def, &settings);
-        if let Err(error) = register_one(&connection, &def.id, &def.friendly, key).await {
-            tracing::warn!(%error, id = %def.id, "failed to register shortcut");
-        }
-    }
-    tracing::info!(count = defs.len(), "registered FanzyZones global shortcuts");
-
-    let proxy = zbus::Proxy::new(&connection, KGA_SERVICE, COMPONENT_PATH, COMPONENT_IFACE)
-        .await
-        .context("create FanzyZones shortcut component proxy")?;
-    let mut presses = proxy
-        .receive_signal("globalShortcutPressed")
-        .await
-        .context("subscribe to globalShortcutPressed")?;
-
-    while let Some(signal) = presses.next().await {
-        let (_component, action, _timestamp): (String, String, i64) =
-            match signal.body().deserialize() {
-                Ok(parsed) => parsed,
-                Err(error) => {
-                    tracing::warn!(%error, "could not decode globalShortcutPressed");
-                    continue;
-                }
-            };
-        if !defs.iter().any(|d| d.id == action) {
-            continue;
-        }
-        if let Err(error) = crate::run_global_shortcut(&action).await {
-            tracing::warn!(%error, %action, "failed to dispatch shortcut");
-        }
-    }
-    Ok(())
+        .with_context(|| format!("unknown shortcut id {id}"))?;
+    let connection = zbus::Connection::session().await.context("connect to session bus")?;
+    set_foreign_conn(&connection, &friendly, sequence).await
 }

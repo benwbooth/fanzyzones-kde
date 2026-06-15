@@ -995,49 +995,49 @@ Item {
     ShortcutHandler {
         name: "FanzyZones: Snap window to next zone"
         text: "FanzyZones: Snap window to next zone"
-        sequence: ""
+        sequence: "Ctrl+Alt+Right"
         onActivated: root.cycleActiveWindow(1)
     }
 
     ShortcutHandler {
         name: "FanzyZones: Snap window to previous zone"
         text: "FanzyZones: Snap window to previous zone"
-        sequence: ""
+        sequence: "Ctrl+Alt+Left"
         onActivated: root.cycleActiveWindow(-1)
     }
 
     ShortcutHandler {
         name: "FanzyZones: Next layout"
         text: "FanzyZones: Next layout"
-        sequence: ""
+        sequence: "Meta+Shift+PgDown"
         onActivated: root.cycleLayout(1)
     }
 
     ShortcutHandler {
         name: "FanzyZones: Previous layout"
         text: "FanzyZones: Previous layout"
-        sequence: ""
+        sequence: "Meta+Shift+PgUp"
         onActivated: root.cycleLayout(-1)
     }
 
     ShortcutHandler {
         name: "FanzyZones: Snap focused window"
         text: "FanzyZones: Snap focused window"
-        sequence: ""
+        sequence: "Meta+Shift+Space"
         onActivated: root.snapClientToClosestZone(root.targetWindow())
     }
 
     ShortcutHandler {
         name: "FanzyZones: Snap all windows"
         text: "FanzyZones: Snap all windows"
-        sequence: ""
+        sequence: "Meta+Space"
         onActivated: root.snapAllWindows()
     }
 
     ShortcutHandler {
         name: "FanzyZones: Toggle zone overlay"
         text: "FanzyZones: Toggle zone overlay"
-        sequence: ""
+        sequence: "Ctrl+Alt+C"
         onActivated: {
             if (root.moving)
                 root.overlayForced = !root.overlayForced;
@@ -1050,7 +1050,7 @@ Item {
             ShortcutHandler {
                 name: "FanzyZones: Snap window to zone " + modelData
                 text: "FanzyZones: Snap window to zone " + modelData
-                sequence: ""
+                sequence: "Meta+Ctrl+" + modelData
                 onActivated: root.snapActiveWindowToZone(modelData - 1)
             }
         }
@@ -1062,7 +1062,7 @@ Item {
             ShortcutHandler {
                 name: "FanzyZones: Use layout " + modelData
                 text: "FanzyZones: Use layout " + modelData
-                sequence: ""
+                sequence: "Meta+Shift+" + modelData
                 onActivated: root.switchLayout(modelData - 1)
             }
         }

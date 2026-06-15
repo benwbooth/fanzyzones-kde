@@ -60,6 +60,13 @@ enum CliCommand {
         /// JSON payload such as {"action":"setLayout","layout":1}.
         payload: String,
     },
+    /// Print the FanzyZones shortcuts as JSON [{id, friendly, sequence}].
+    Shortcuts,
+    /// Rebind a FanzyZones shortcut by id to a key sequence (empty unbinds it).
+    SetShortcut {
+        id: String,
+        sequence: String,
+    },
     /// Write the current JSON settings into KWin's script config.
     WriteConfig,
     /// Ask KWin to reconfigure.
@@ -134,7 +141,11 @@ async fn run_cli_async(command: CliCommand) -> Result<()> {
             let settings = load_and_save_settings()?;
             KwinController::from_environment()?
                 .sync(&settings, reload)
-                .await
+                .await?;
+            if reload {
+                shortcuts::apply_default_bindings().await?;
+            }
+            Ok(())
         }
         CliCommand::InstallPlasmoid => install_plasma_integration().await,
         CliCommand::StateJson { sync } => {
@@ -143,6 +154,21 @@ async fn run_cli_async(command: CliCommand) -> Result<()> {
         }
         CliCommand::InvokeAction { payload } => {
             println!("{}", invoke_action_payload(&payload).await?);
+            Ok(())
+        }
+        CliCommand::Shortcuts => {
+            let list: Vec<_> = shortcuts::read_shortcuts()
+                .await?
+                .into_iter()
+                .map(|(id, friendly, sequence)| {
+                    serde_json::json!({ "id": id, "friendly": friendly, "sequence": sequence })
+                })
+                .collect();
+            println!("{}", serde_json::to_string(&list)?);
+            Ok(())
+        }
+        CliCommand::SetShortcut { id, sequence } => {
+            shortcuts::set_foreign_shortcut(&id, &sequence).await?;
             Ok(())
         }
         CliCommand::WriteConfig => {
@@ -248,57 +274,6 @@ impl FanzyDbusService {
     async fn invoke_action(&self, payload: &str) -> zbus::fdo::Result<String> {
         invoke_action_payload(payload).await.map_err(fdo_error)
     }
-
-    /// JSON array of the FanzyZones shortcuts as {id, friendly, sequence}, with
-    /// user overrides applied. Used by the settings dialog to populate fields.
-    #[zbus(name = "Shortcuts")]
-    async fn shortcuts(&self) -> zbus::fdo::Result<String> {
-        let settings = config::load_or_default().map_err(fdo_error)?;
-        let list: Vec<_> = shortcuts::effective_shortcuts(&settings)
-            .into_iter()
-            .map(|(id, friendly, sequence)| {
-                serde_json::json!({ "id": id, "friendly": friendly, "sequence": sequence })
-            })
-            .collect();
-        serde_json::to_string(&list).map_err(|e| fdo_error(e.into()))
-    }
-
-    /// Rebind a shortcut from the settings dialog: persist the override and
-    /// apply it live to KGlobalAccel over this (owning) connection.
-    #[zbus(name = "SetShortcut")]
-    async fn set_shortcut(
-        &self,
-        #[zbus(connection)] connection: &zbus::Connection,
-        id: &str,
-        sequence: &str,
-    ) -> zbus::fdo::Result<String> {
-        set_shortcut_binding(connection, id, sequence)
-            .await
-            .map_err(fdo_error)
-    }
-}
-
-async fn set_shortcut_binding(
-    connection: &zbus::Connection,
-    id: &str,
-    sequence: &str,
-) -> Result<String> {
-    let mut settings = config::load_or_default()?;
-    if shortcuts::shortcut_defs().iter().any(|d| d.id == id) {
-        settings
-            .shortcut_overrides
-            .insert(id.to_string(), sequence.to_string());
-        config::save(&settings)?;
-        let key = shortcuts::string_to_keycode(sequence).unwrap_or(0);
-        shortcuts::apply_shortcut(connection, id, key).await?;
-    }
-    let list: Vec<_> = shortcuts::effective_shortcuts(&settings)
-        .into_iter()
-        .map(|(id, friendly, sequence)| {
-            serde_json::json!({ "id": id, "friendly": friendly, "sequence": sequence })
-        })
-        .collect();
-    Ok(serde_json::to_string(&list)?)
 }
 
 fn fdo_error(err: anyhow::Error) -> zbus::fdo::Error {
@@ -317,16 +292,7 @@ async fn run_dbus_daemon() -> Result<()> {
         .await
         .context("connect FanzyZones DBus backend")?;
 
-    // Register global shortcuts under a dedicated "FanzyZones" component and
-    // forward presses to the KWin script. Uses this long-lived connection so
-    // KGlobalAccel keeps the bindings active.
-    let shortcut_connection = connection.clone();
-    tokio::spawn(async move {
-        if let Err(error) = shortcuts::register_and_listen(shortcut_connection).await {
-            tracing::error!(%error, "FanzyZones shortcut listener stopped");
-        }
-    });
-
+    let _ = &connection;
     std::future::pending::<()>().await;
     #[allow(unreachable_code)]
     Ok(())
@@ -1018,34 +984,6 @@ pub(crate) fn log_placement_debug(message: impl AsRef<str>) {
     {
         let _ = writeln!(file, "[{millis}] {}", message.as_ref());
     }
-}
-
-/// Dispatch a global shortcut (fired by KGlobalAccel under the "fanzyzones"
-/// component) by invoking the matching keyless handler in the persistent KWin
-/// script by name, so the action runs with full script state.
-pub(crate) async fn run_global_shortcut(action: &str) -> Result<()> {
-    let name = if let Some(n) = action.strip_prefix("snap-zone-") {
-        format!("FanzyZones: Snap window to zone {n}")
-    } else if let Some(n) = action.strip_prefix("use-layout-") {
-        format!("FanzyZones: Use layout {n}")
-    } else {
-        match action {
-            "next-zone" => "FanzyZones: Snap window to next zone".to_string(),
-            "previous-zone" => "FanzyZones: Snap window to previous zone".to_string(),
-            "next-layout" => "FanzyZones: Next layout".to_string(),
-            "previous-layout" => "FanzyZones: Previous layout".to_string(),
-            "snap-focused" => "FanzyZones: Snap focused window".to_string(),
-            "snap-all" => "FanzyZones: Snap all windows".to_string(),
-            "toggle-overlay" => "FanzyZones: Toggle zone overlay".to_string(),
-            _ => {
-                tracing::debug!(%action, "unknown global shortcut");
-                return Ok(());
-            }
-        }
-    };
-    KwinController::from_environment()?
-        .invoke_shortcut(&name)
-        .await
 }
 
 pub(crate) async fn handle_visual_menu_action(
