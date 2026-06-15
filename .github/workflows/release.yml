@@ -1,0 +1,57 @@
+name: release
+
+# Builds the portable, self-contained static binary. The plasmoid, KWin script
+# and icons are embedded, so this single file is the whole product: download it,
+# run `./fanzyzones-kde install`, and it unpacks + registers everything itself.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  static-binary:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust + musl target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add x86_64-unknown-linux-musl
+          sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static binary
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Strip and verify it is static
+        run: |
+          strip target/x86_64-unknown-linux-musl/release/fanzyzones-kde
+          file target/x86_64-unknown-linux-musl/release/fanzyzones-kde
+          ldd target/x86_64-unknown-linux-musl/release/fanzyzones-kde || true
+          cp target/x86_64-unknown-linux-musl/release/fanzyzones-kde fanzyzones-kde-x86_64-linux
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fanzyzones-kde-x86_64-linux
+          path: fanzyzones-kde-x86_64-linux
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: fanzyzones-kde-x86_64-linux
+          body: |
+            Self-contained static binary (x86_64). On a KDE Plasma 6 system:
+
+            ```
+            chmod +x fanzyzones-kde-x86_64-linux
+            ./fanzyzones-kde-x86_64-linux install --reload
+            ```
+
+            Then add the **FanzyZones** widget to your system tray. The binary
+            embeds the plasmoid, KWin script and icons and installs them itself.
