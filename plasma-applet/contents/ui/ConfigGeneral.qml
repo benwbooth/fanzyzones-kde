@@ -15,6 +15,8 @@ KCM.SimpleKCM {
     property var settings: ({})
     // Suppress change handlers while we populate controls from the CLI.
     property bool loading: true
+    // Read by the config dialog to enable the Apply button.
+    property bool unsavedChanges: false
     property int cliNonce: 0
     property var executableCallbacks: ({})
 
@@ -56,6 +58,7 @@ KCM.SimpleKCM {
                 // ignore malformed state
             }
             loading = false;
+            page.unsavedChanges = false;
         });
     }
 
@@ -77,14 +80,34 @@ KCM.SimpleKCM {
             colorSwatch.color = Qt.rgba(s.highlight_color.red, s.highlight_color.green, s.highlight_color.blue, 1);
     }
 
-    function pushPatch(patch) {
-        if (loading)
-            return;
+    // Mark the page dirty so the dialog enables Apply; nothing is written yet.
+    function markDirty() {
+        if (!loading)
+            page.unsavedChanges = true;
+    }
+
+    // Called by the config dialog when Apply/OK is pressed.
+    function saveConfig() {
+        const patch = {
+            "snap_mode": snapModifier.checked ? "modifier" : "auto",
+            "modifiers": currentModifiers(),
+            "gap": gapSpin.value,
+            "outer_padding": paddingSpin.value,
+            "keyboard_shortcuts_enabled": shortcutsCheck.checked,
+            "show_zone_numbers": zoneNumbersCheck.checked,
+            "overlay_opacity": opacitySlider.value,
+            "highlight_color": {
+                "red": colorSwatch.color.r,
+                "green": colorSwatch.color.g,
+                "blue": colorSwatch.color.b
+            }
+        };
         runCli("invoke-action " + shellQuote(JSON.stringify({
             "action": "updateSettings",
             "patch": patch,
             "closeMenu": false
         })), null);
+        page.unsavedChanges = false;
     }
 
     function currentModifiers() {
@@ -104,22 +127,22 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("Snap mode:")
             QQC2.ButtonGroup.group: snapGroup
             text: i18n("Hold a modifier and drag")
-            onToggled: if (checked) page.pushPatch({"snap_mode": "modifier"})
+            onToggled: page.markDirty()
         }
 
         QQC2.RadioButton {
             id: snapAuto
             QQC2.ButtonGroup.group: snapGroup
             text: i18n("Auto-snap on drag")
-            onToggled: if (checked) page.pushPatch({"snap_mode": "auto"})
+            onToggled: page.markDirty()
         }
 
         RowLayout {
             Kirigami.FormData.label: i18n("Drag modifiers:")
-            QQC2.CheckBox { id: modShift; text: i18n("Shift"); onToggled: page.pushPatch({"modifiers": page.currentModifiers()}) }
-            QQC2.CheckBox { id: modCtrl; text: i18n("Ctrl"); onToggled: page.pushPatch({"modifiers": page.currentModifiers()}) }
-            QQC2.CheckBox { id: modAlt; text: i18n("Alt"); onToggled: page.pushPatch({"modifiers": page.currentModifiers()}) }
-            QQC2.CheckBox { id: modMeta; text: i18n("Meta"); onToggled: page.pushPatch({"modifiers": page.currentModifiers()}) }
+            QQC2.CheckBox { id: modShift; text: i18n("Shift"); onToggled: page.markDirty() }
+            QQC2.CheckBox { id: modCtrl; text: i18n("Ctrl"); onToggled: page.markDirty() }
+            QQC2.CheckBox { id: modAlt; text: i18n("Alt"); onToggled: page.markDirty() }
+            QQC2.CheckBox { id: modMeta; text: i18n("Meta"); onToggled: page.markDirty() }
         }
 
         Item { Kirigami.FormData.isSection: true }
@@ -129,7 +152,7 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("Gap between zones (px):")
             from: 0
             to: 200
-            onValueModified: page.pushPatch({"gap": value})
+            onValueModified: page.markDirty()
         }
 
         QQC2.SpinBox {
@@ -137,7 +160,7 @@ KCM.SimpleKCM {
             Kirigami.FormData.label: i18n("Outer padding (px):")
             from: 0
             to: 200
-            onValueModified: page.pushPatch({"outer_padding": value})
+            onValueModified: page.markDirty()
         }
 
         Item { Kirigami.FormData.isSection: true }
@@ -146,14 +169,14 @@ KCM.SimpleKCM {
             id: shortcutsCheck
             Kirigami.FormData.label: i18n("Keyboard shortcuts:")
             text: i18n("Enable global shortcuts")
-            onToggled: page.pushPatch({"keyboard_shortcuts_enabled": checked})
+            onToggled: page.markDirty()
         }
 
         QQC2.CheckBox {
             id: zoneNumbersCheck
             Kirigami.FormData.label: i18n("Overlay:")
             text: i18n("Show zone numbers")
-            onToggled: page.pushPatch({"show_zone_numbers": checked})
+            onToggled: page.markDirty()
         }
 
         RowLayout {
@@ -164,7 +187,7 @@ KCM.SimpleKCM {
                 to: 0.95
                 stepSize: 0.05
                 Layout.preferredWidth: Kirigami.Units.gridUnit * 10
-                onMoved: page.pushPatch({"overlay_opacity": value})
+                onMoved: page.markDirty()
             }
             QQC2.Label { text: Math.round(opacitySlider.value * 100) + "%" }
         }
@@ -200,11 +223,7 @@ KCM.SimpleKCM {
         selectedColor: colorSwatch.color
         onAccepted: {
             colorSwatch.color = selectedColor;
-            page.pushPatch({"highlight_color": {
-                "red": selectedColor.r,
-                "green": selectedColor.g,
-                "blue": selectedColor.b
-            }});
+            page.markDirty();
         }
     }
 }

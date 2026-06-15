@@ -13,6 +13,9 @@ KCM.SimpleKCM {
 
     // [{ id, friendly, sequence }]
     property var shortcuts: []
+    // Read by the config dialog to enable Apply; staged (id -> sequence) edits.
+    property bool unsavedChanges: false
+    property var pending: ({})
     property int cliNonce: 0
     property var executableCallbacks: ({})
 
@@ -51,8 +54,18 @@ KCM.SimpleKCM {
         });
     }
 
-    function setShortcut(id, sequence) {
-        runCli("set-shortcut " + shellQuote(id) + " " + shellQuote(sequence), null);
+    function stageShortcut(id, sequence) {
+        page.pending[id] = sequence;
+        page.unsavedChanges = true;
+    }
+
+    // Called by the config dialog when Apply/OK is pressed.
+    function saveConfig() {
+        for (const id in page.pending) {
+            runCli("set-shortcut " + shellQuote(id) + " " + shellQuote(page.pending[id]), null);
+        }
+        page.pending = ({});
+        page.unsavedChanges = false;
     }
 
     Kirigami.FormLayout {
@@ -63,7 +76,7 @@ KCM.SimpleKCM {
                 required property var modelData
                 Kirigami.FormData.label: modelData.friendly + ":"
                 keySequence: modelData.sequence
-                onCaptureFinished: page.setShortcut(modelData.id, keySequence.toString())
+                onCaptureFinished: page.stageShortcut(modelData.id, keySequence.toString())
             }
         }
     }

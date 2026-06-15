@@ -300,7 +300,7 @@ PlasmoidItem {
                             }
 
                             onSnapZone: function(index, zone) {
-                                main.invokeAction({"action": "snap", "layout": index, "zone": zone});
+                                main.invokeAction({"action": "snap", "layout": index, "zone": zone}, false);
                             }
 
                             onEditLayout: function(index) {
