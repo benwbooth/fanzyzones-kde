@@ -8,9 +8,14 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum SnapMode {
+    /// FanzyZones overlay snaps on any drag, no key held.
     Auto,
+    /// Shift+drag tiles via KWin's native tiling (the synced per-monitor tiles).
     #[default]
     Modifier,
+    /// FanzyZones overlay snaps when the configured modifier(s) are held during
+    /// a drag (e.g. Meta or Ctrl); Shift+drag still does KWin tiling.
+    Overlay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
