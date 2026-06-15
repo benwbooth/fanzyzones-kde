@@ -12,6 +12,51 @@ This is an initial working project scaffold with real Rust code, an installable
 Plasma 6 applet, an installable KWin package, shared JSON settings, and tests for
 layout/config logic.
 
+## Installation
+
+FanzyZones KDE ships as a single **self-contained static binary** (x86_64) that
+embeds the Plasma applet and KWin script and installs them itself. It needs
+**KDE Plasma 6** (Wayland or X11).
+
+### Quick install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/benwbooth/fanzyzones-kde/main/install.sh | sh
+```
+
+This downloads the latest release binary to `~/.local/bin/fanzyzones-kde` and
+runs its installer. Re-run it any time to update.
+
+### Manual
+
+Grab the binary from the
+[latest release](https://github.com/benwbooth/fanzyzones-kde/releases/latest):
+
+```sh
+curl -fSLO https://github.com/benwbooth/fanzyzones-kde/releases/latest/download/fanzyzones-kde-x86_64-linux
+chmod +x fanzyzones-kde-x86_64-linux
+./fanzyzones-kde-x86_64-linux install --reload
+```
+
+### Nix
+
+```sh
+nix profile install github:benwbooth/fanzyzones-kde
+fanzyzones-kde install --reload
+```
+
+### From source
+
+```sh
+nix develop            # or supply Rust + the KDE/Qt CLI tools yourself
+cargo build --release
+./target/release/fanzyzones-kde install --reload
+```
+
+After installing, add the **FanzyZones** widget to your system tray (right-click
+the tray → Configure System Tray, or right-click the panel → Add Widgets). The
+in-app **Settings** and the tray menu's **New Custom Layout** open from there.
+
 ## FanzyZones Parity
 
 - Seven built-in FanzyZones layouts:
@@ -25,18 +70,18 @@ layout/config logic.
 - Plasma tray icon with an original-style visual layout menu: click a layout name to
   activate it, or click a pane in its mini diagram to move the focused window
   there.
-- Idempotent setup that installs or upgrades the Plasma applet, registers the
-  Rust DBus backend with a user systemd service/session-bus activation hook,
-  installs or upgrades the bundled KWin script, writes settings, enables it, and
-  asks KWin to reconfigure.
+- Idempotent setup that installs or upgrades the Plasma applet and the bundled
+  KWin script, writes settings, enables it, and asks KWin to reconfigure.
 - Focused-window snapping to zone 1 through 9.
 - Focused-window previous/next zone cycling.
 - Drag-to-snap with overlay.
 - Modifier-gated drag snapping or auto-snap mode.
 - Configurable gap, outer padding, overlay color, opacity, and zone numbers.
 - Per-screen and per-desktop active layout tracking.
-- Custom layouts through imported or edited JSON settings, with visual-menu
-  create/edit/delete hooks for user layouts.
+- Custom layouts via a built-in visual editor (drag/resize/split zones, name,
+  save) reachable from the tray menu, plus create/edit/delete of user layouts.
+- Per-display layout assignment with a tray display picker, and native KWin
+  Shift+drag tiling driven by the active layout.
 - Keyboard shortcuts matching the macOS behavior concept:
   - `Ctrl+Alt+Left` / `Ctrl+Alt+Right` cycle zones.
   - `Ctrl+Alt+Num+1` through `Ctrl+Alt+Num+9` snap to a zone.
@@ -68,8 +113,6 @@ The dev shell provides Rust plus KDE/Qt command-line tools such as
 ## Commands
 
 ```sh
-fanzyzones-kde daemon
-fanzyzones-kde visual-menu
 fanzyzones-kde install --reload
 fanzyzones-kde install-plasmoid
 fanzyzones-kde state-json --sync
@@ -84,13 +127,14 @@ fanzyzones-kde import-config ./settings.json --sync
 fanzyzones-kde disable
 ```
 
-Running `fanzyzones-kde install --reload` is enough for normal use. It installs
-the applet into Plasma, adds it to the system tray config, writes DBus and user
-systemd activation for `fanzyzones-kde daemon`, refreshes the session-bus
-activation cache, starts the backend service, and syncs the KWin script.
+Running `fanzyzones-kde install --reload` is enough for normal use. It unpacks
+the embedded plasmoid + KWin script (when running as a standalone binary),
+installs/upgrades them with `kpackagetool6`, writes a small CLI wrapper the
+applet calls, syncs settings into `kwinrc`, and reloads the KWin script.
 
-The applet opens as Plasma's native tray popup. It uses DBus to talk to the Rust
-backend; there is no HTTP service and no authored C++ in this repository.
+There is no background daemon: the applet shells out to this CLI on demand. The
+backend is pure Rust (no Qt) — the visual menu, settings, and layout editor all
+run in the Plasma applet's own QML.
 
 ## Layout JSON
 

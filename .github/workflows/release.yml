@@ -1,8 +1,11 @@
 name: release
 
-# Builds the portable, self-contained static binary. The plasmoid, KWin script
-# and icons are embedded, so this single file is the whole product: download it,
-# run `./fanzyzones-kde install`, and it unpacks + registers everything itself.
+# Builds the portable, self-contained static binary and publishes it as a
+# release. The plasmoid, KWin script and icons are embedded, so this single file
+# is the whole product: download it, run `./fanzyzones-kde install`, and it
+# unpacks + registers everything itself.
+#
+# Cut a release by pushing a tag, e.g.:  git tag v0.1.0 && git push origin v0.1.0
 on:
   push:
     tags: ["v*"]
@@ -27,31 +30,47 @@ jobs:
       - name: Build static binary
         run: cargo build --release --locked --target x86_64-unknown-linux-musl
 
-      - name: Strip and verify it is static
+      - name: Package
         run: |
-          strip target/x86_64-unknown-linux-musl/release/fanzyzones-kde
-          file target/x86_64-unknown-linux-musl/release/fanzyzones-kde
-          ldd target/x86_64-unknown-linux-musl/release/fanzyzones-kde || true
-          cp target/x86_64-unknown-linux-musl/release/fanzyzones-kde fanzyzones-kde-x86_64-linux
+          install -m755 target/x86_64-unknown-linux-musl/release/fanzyzones-kde fanzyzones-kde-x86_64-linux
+          strip fanzyzones-kde-x86_64-linux
+          file fanzyzones-kde-x86_64-linux
+          ( ldd fanzyzones-kde-x86_64-linux || true )
+          sha256sum fanzyzones-kde-x86_64-linux > fanzyzones-kde-x86_64-linux.sha256
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: fanzyzones-kde-x86_64-linux
-          path: fanzyzones-kde-x86_64-linux
+          path: |
+            fanzyzones-kde-x86_64-linux
+            fanzyzones-kde-x86_64-linux.sha256
 
-      - name: Attach to release
+      - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: fanzyzones-kde-x86_64-linux
+          files: |
+            fanzyzones-kde-x86_64-linux
+            fanzyzones-kde-x86_64-linux.sha256
+            install.sh
           body: |
-            Self-contained static binary (x86_64). On a KDE Plasma 6 system:
+            ## Install (KDE Plasma 6, x86_64)
 
+            One line:
+
+            ```sh
+            curl -fsSL https://raw.githubusercontent.com/benwbooth/fanzyzones-kde/main/install.sh | sh
             ```
+
+            Or manually:
+
+            ```sh
+            curl -fSLO https://github.com/benwbooth/fanzyzones-kde/releases/latest/download/fanzyzones-kde-x86_64-linux
             chmod +x fanzyzones-kde-x86_64-linux
             ./fanzyzones-kde-x86_64-linux install --reload
             ```
 
-            Then add the **FanzyZones** widget to your system tray. The binary
-            embeds the plasmoid, KWin script and icons and installs them itself.
+            Then add the **FanzyZones** widget to your system tray. The binary is a
+            self-contained static executable — it embeds the plasmoid + KWin
+            script and installs them itself.
