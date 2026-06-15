@@ -305,12 +305,24 @@ PlasmoidItem {
                             }
 
                             onEditLayout: function(index) {
+                                main.closeMenu();
                                 main.invokeAction({"action": "editLayout", "layout": index});
                             }
 
                             onDeleteLayout: function(index) {
                                 main.invokeAction({"action": "deleteLayout", "layout": index});
                             }
+                        }
+                    }
+
+                    Separator { width: parent.width }
+
+                    MenuAction {
+                        width: parent.width
+                        text: "New Custom Layout…"
+                        onClicked: {
+                            main.closeMenu();
+                            main.invokeAction({"action": "createLayout"});
                         }
                     }
 

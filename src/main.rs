@@ -97,6 +97,16 @@ enum CliCommand {
     },
     /// Disable the KWin script.
     Disable,
+    /// Open the visual layout editor for a new custom layout (in-process GUI),
+    /// then persist it and print updated applet state JSON.
+    CreateLayoutGui,
+    /// Open the visual layout editor for an existing layout (in-process GUI),
+    /// then persist it and print updated applet state JSON.
+    EditLayoutGui {
+        /// Zero-based index of the layout to edit.
+        #[arg(long)]
+        layout: usize,
+    },
 }
 
 fn main() -> Result<()> {
@@ -107,6 +117,11 @@ fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
         Some(CliCommand::Tray) => run_tray(),
+        // The editor hosts a QGuiApplication, which must own the main thread and
+        // be the only one in the process, so dispatch it here rather than under
+        // the Tokio runtime in run_cli().
+        Some(CliCommand::CreateLayoutGui) => run_layout_editor_command(None),
+        Some(CliCommand::EditLayoutGui { layout }) => run_layout_editor_command(Some(layout)),
         Some(command) => run_cli(command),
         None => {
             use clap::CommandFactory;
@@ -127,6 +142,9 @@ fn run_cli(command: CliCommand) -> Result<()> {
 async fn run_cli_async(command: CliCommand) -> Result<()> {
     match command {
         CliCommand::Tray => unreachable!("tray is handled by the Qt event loop"),
+        CliCommand::CreateLayoutGui | CliCommand::EditLayoutGui { .. } => {
+            unreachable!("layout editor is handled on the main thread")
+        }
         CliCommand::VisualMenu => {
             let controller = KwinController::from_environment()?;
             match run_visual_menu_blocking(&controller, None, "KWin integration ready").await? {
@@ -431,6 +449,14 @@ fn activation_environment() -> Result<Vec<(&'static str, PathBuf)>> {
     }
     if let Ok(path) = layout_menu_qml_path() {
         values.push(("FANZYZONES_KDE_LAYOUT_MENU_QML", path));
+    }
+    if let Ok(path) = layout_editor_qml_path() {
+        values.push(("FANZYZONES_KDE_LAYOUT_EDITOR_QML", path));
+    }
+    // Resolve qml now (install runs where it is on PATH); the applet's session
+    // usually does not have it, so the launcher relies on this baked path.
+    if let Some(path) = find_in_path("qml").or_else(|| find_in_path("qml6")) {
+        values.push(("FANZYZONES_KDE_QML_BIN", path));
     }
     if let Ok(path) = plasmoid_package_path() {
         values.push(("FANZYZONES_KDE_PLASMOID_DIR", path));
@@ -797,7 +823,7 @@ fn visual_menu_command(
     anchor: Option<(i32, i32)>,
     status: &str,
 ) -> ProcessCommand {
-    let mut command = ProcessCommand::new("qml");
+    let mut command = ProcessCommand::new(qml_binary());
     command
         .arg(qml_path)
         .arg("--")
@@ -926,15 +952,15 @@ pub(crate) async fn handle_visual_menu_action(
             reload_runtime_settings_or_kwin(controller).await?;
         }
         VisualMenuAction::CreateLayout => {
-            create_custom_layout(settings)?;
-            config::save(settings)?;
-            controller.write_settings(settings).await?;
-            reload_runtime_settings_or_kwin(controller).await?;
-            open_settings_file(settings).await?;
+            // The editor runs as a child process (it owns a QGuiApplication) and
+            // persists + resyncs itself; just refresh our settings afterward.
+            spawn_layout_editor_subprocess(None).await?;
+            *settings = load_and_save_settings()?;
         }
         VisualMenuAction::EditLayout { layout } => {
             ensure_layout_exists(settings, layout)?;
-            open_settings_file(settings).await?;
+            spawn_layout_editor_subprocess(Some(layout)).await?;
+            *settings = load_and_save_settings()?;
         }
         VisualMenuAction::DeleteLayout { layout } => {
             delete_custom_layout(settings, layout)?;
@@ -1029,19 +1055,198 @@ fn ensure_zone_exists(settings: &Settings, layout: usize, zone: usize) -> Result
     }
 }
 
-fn create_custom_layout(settings: &mut Settings) -> Result<()> {
-    ensure_layout_exists(settings, settings.active_layout)?;
-    let mut layout = settings.layouts[settings.active_layout].clone();
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("read system time")?
-        .as_millis();
-    layout.id = format!("custom.{millis}");
-    layout.name = next_custom_layout_name(settings);
-    layout.is_built_in = false;
-    settings.layouts.push(layout);
-    settings.active_layout = settings.layouts.len() - 1;
+/// Serialize a layout into the editor's input shape: the name, its id (so an
+/// edit overwrites in place), whether it's built-in (the editor saves built-ins
+/// as a new copy), and zones as plain normalized rectangles.
+fn layout_editor_input(layout: &crate::layout::Layout) -> serde_json::Value {
+    serde_json::json!({
+        "name": layout.name,
+        "id": layout.id,
+        "isBuiltIn": layout.is_built_in,
+        "zones": layout
+            .zones
+            .iter()
+            .map(|z| serde_json::json!({
+                "x": z.x, "y": z.y, "width": z.width, "height": z.height,
+            }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Main-thread entry point for the `create-layout-gui` / `edit-layout-gui`
+/// subcommands: build the editor input, run the in-process QML editor, and on
+/// Save persist the layout and resync KWin. Prints applet state JSON so the
+/// caller (tray menu / plasmoid) can refresh.
+fn run_layout_editor_command(layout: Option<usize>) -> Result<()> {
+    let mut settings = load_and_save_settings()?;
+    let input = match layout {
+        Some(idx) => {
+            ensure_layout_exists(&settings, idx)?;
+            layout_editor_input(&settings.layouts[idx])
+        }
+        None => serde_json::json!({
+            "name": next_custom_layout_name(&settings),
+            "id": serde_json::Value::Null,
+            "isBuiltIn": false,
+            "zones": [],
+        }),
+    };
+
+    let result = run_layout_editor_app(serde_json::to_string(&input)?)?;
+    if let Some(result_json) = result {
+        let value: serde_json::Value =
+            serde_json::from_str(&result_json).context("parse layout editor result")?;
+        let new_layout = layout_from_editor(value)?;
+        upsert_layout(&mut settings, new_layout);
+        config::save(&settings)?;
+        // Persistence + KWin resync are async; the Qt event loop has ended, so a
+        // short-lived runtime here is fine.
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .context("create Tokio runtime")?
+            .block_on(async {
+                let controller = KwinController::from_environment()?;
+                controller.write_settings(&settings).await?;
+                reload_runtime_settings_or_kwin(&controller).await?;
+                anyhow::Ok(())
+            })?;
+    }
+
+    println!("{}", current_applet_state_json("KWin integration ready")?);
     Ok(())
+}
+
+/// Host the layout editor QML in the binary's own QQmlApplicationEngine (no
+/// external `qml`). Returns the result JSON the editor submitted on Save, or
+/// None if it was cancelled/closed.
+fn run_layout_editor_app(input: String) -> Result<Option<String>> {
+    backend::set_editor_input(input);
+    configure_qt_platform_environment();
+    cxx_qt::init_crate!(fanzyzones_kde);
+
+    let mut app = QGuiApplication::new();
+    app.pin_mut()
+        .set_application_name(&QString::from("FanzyZones — Layout Editor"));
+    app.pin_mut()
+        .set_application_version(&QString::from(env!("CARGO_PKG_VERSION")));
+    QGuiApplication::set_desktop_file_name(&QString::from("fanzyzones-kde"));
+
+    let mut engine = QQmlApplicationEngine::new();
+    let _object_created_guard = engine.pin_mut().on_object_created(|_engine, object, url| {
+        if object.is_null() {
+            eprintln!(
+                "FanzyZones editor QML did not create a root object: {}",
+                String::from(url.to_local_file_or_default())
+            );
+        }
+    });
+    let _object_creation_failed_guard =
+        engine.pin_mut().on_object_creation_failed(|_engine, url| {
+            eprintln!(
+                "FanzyZones editor QML object creation failed: {}",
+                String::from(url.to_local_file_or_default())
+            );
+        });
+    add_generated_qml_import_path(engine.pin_mut());
+    let qml_path = layout_editor_qml_path()?;
+    let qml_url = QUrl::from_local_file(&QString::from(qml_path.to_string_lossy().into_owned()));
+    engine.pin_mut().load(&qml_url);
+    let code = app.pin_mut().exec();
+    anyhow::ensure!(code == 0, "layout editor exited with {code}");
+    Ok(backend::take_editor_result())
+}
+
+/// Spawn the editor in a child instance of ourselves (so its QGuiApplication
+/// gets a clean main thread). Used from contexts already inside Tokio or a Qt
+/// event loop, where we cannot start the editor in-process.
+async fn spawn_layout_editor_subprocess(layout: Option<usize>) -> Result<()> {
+    let exe = env::current_exe().context("resolve current executable")?;
+    let mut command = ProcessCommand::new(exe);
+    match layout {
+        Some(idx) => {
+            command
+                .arg("edit-layout-gui")
+                .arg("--layout")
+                .arg(idx.to_string());
+        }
+        None => {
+            command.arg("create-layout-gui");
+        }
+    }
+    // The child persists and resyncs itself; its state-JSON stdout must not leak
+    // into our caller's stream (the plasmoid parses our stdout as one object).
+    command.stdout(Stdio::null());
+    let status = command
+        .status()
+        .await
+        .context("run layout editor subprocess")?;
+    anyhow::ensure!(status.success(), "layout editor subprocess failed");
+    Ok(())
+}
+
+fn layout_from_editor(value: serde_json::Value) -> Result<crate::layout::Layout> {
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("My Layout")
+        .trim()
+        .to_string();
+    let name = if name.is_empty() {
+        "My Layout".to_string()
+    } else {
+        name
+    };
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let millis = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or_default();
+            format!("custom.{millis}")
+        });
+    let zones_in = value
+        .get("zones")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let mut zones = Vec::new();
+    for (i, z) in zones_in.iter().enumerate() {
+        let f = |k: &str| z.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        zones.push(crate::layout::Zone::new(
+            i,
+            format!("Zone {}", i + 1),
+            f("x"),
+            f("y"),
+            f("width"),
+            f("height"),
+        ));
+    }
+    anyhow::ensure!(!zones.is_empty(), "layout editor returned no zones");
+    Ok(crate::layout::Layout {
+        id,
+        name,
+        is_built_in: false,
+        padding: 0,
+        zones,
+    })
+}
+
+/// Replace the layout with the same id, or append it, then make it active.
+fn upsert_layout(settings: &mut Settings, layout: crate::layout::Layout) {
+    let id = layout.id.clone();
+    if let Some(slot) = settings.layouts.iter_mut().find(|l| l.id == id) {
+        *slot = layout;
+    } else {
+        settings.layouts.push(layout);
+    }
+    if let Some(idx) = settings.layouts.iter().position(|l| l.id == id) {
+        settings.active_layout = idx;
+    }
 }
 
 fn next_custom_layout_name(settings: &Settings) -> String {
@@ -1131,6 +1336,46 @@ fn layout_menu_qml_path() -> Result<PathBuf> {
         .flatten()
         .find(|path| path.exists())
         .with_context(|| "locate FanzyZones visual menu QML")
+}
+
+/// First matching executable for `name` on PATH (a minimal `which`).
+fn find_in_path(name: &str) -> Option<PathBuf> {
+    let path = env::var_os("PATH")?;
+    env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+/// The `qml` runtime used to launch standalone QML windows (the layout editor
+/// and tray menu). The session that runs the applet usually lacks `qml` on PATH,
+/// so the install wrapper bakes the absolute path resolved at install time into
+/// FANZYZONES_KDE_QML_BIN; fall back to a PATH lookup, then the bare name.
+fn qml_binary() -> PathBuf {
+    if let Some(path) = env::var_os("FANZYZONES_KDE_QML_BIN") {
+        return PathBuf::from(path);
+    }
+    find_in_path("qml")
+        .or_else(|| find_in_path("qml6"))
+        .unwrap_or_else(|| PathBuf::from("qml"))
+}
+
+fn layout_editor_qml_path() -> Result<PathBuf> {
+    let candidates = [
+        env::var_os("FANZYZONES_KDE_LAYOUT_EDITOR_QML").map(PathBuf::from),
+        env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf))
+            .map(|bin| bin.join("../share/fanzyzones-kde/qml/LayoutEditor.qml")),
+        env::current_dir()
+            .ok()
+            .map(|dir| dir.join("resources/qml/LayoutEditor.qml")),
+    ];
+
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.exists())
+        .with_context(|| "locate FanzyZones layout editor QML")
 }
 
 fn tray_menu_qml_path() -> Result<PathBuf> {

@@ -5,6 +5,7 @@ use serde::Serialize;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 
 #[derive(Default)]
 pub struct FanzyBackendRust {
@@ -12,6 +13,28 @@ pub struct FanzyBackendRust {
     status: QString,
     tray_command_json: QString,
     tray_icon_source: QString,
+}
+
+#[derive(Default)]
+pub struct EditorBridgeRust {
+    input_json: QString,
+}
+
+// Channels between the Rust side that launches the editor and the in-process QML
+// editor. The editor runs on the main thread in its own process, so plain
+// statics suffice: Rust stuffs the input before exec(), QML hands back the
+// result via submit().
+static EDITOR_INPUT: Mutex<Option<String>> = Mutex::new(None);
+static EDITOR_RESULT: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn set_editor_input(json: String) {
+    if let Ok(mut guard) = EDITOR_INPUT.lock() {
+        *guard = Some(json);
+    }
+}
+
+pub fn take_editor_result() -> Option<String> {
+    EDITOR_RESULT.lock().ok().and_then(|mut guard| guard.take())
 }
 
 #[cxx_qt::bridge]
@@ -36,10 +59,39 @@ pub mod ffi {
 
         #[qinvokable]
         fn invoke_action(self: Pin<&mut FanzyBackend>, payload: &QString) -> bool;
+
+        #[qobject]
+        #[qml_element]
+        #[qproperty(QString, input_json)]
+        type EditorBridge = super::EditorBridgeRust;
+
+        // The QML editor calls this on Save with the layout as JSON.
+        #[qinvokable]
+        fn submit(self: Pin<&mut EditorBridge>, result: &QString);
     }
 
     impl cxx_qt::Initialize for FanzyBackend {}
     impl cxx_qt::Threading for FanzyBackend {}
+    impl cxx_qt::Initialize for EditorBridge {}
+}
+
+impl cxx_qt::Initialize for ffi::EditorBridge {
+    fn initialize(mut self: Pin<&mut Self>) {
+        let input = EDITOR_INPUT
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .unwrap_or_default();
+        self.as_mut().set_input_json(QString::from(input));
+    }
+}
+
+impl ffi::EditorBridge {
+    fn submit(self: Pin<&mut Self>, result: &QString) {
+        if let Ok(mut guard) = EDITOR_RESULT.lock() {
+            *guard = Some(String::from(result));
+        }
+    }
 }
 
 impl cxx_qt::Initialize for ffi::FanzyBackend {
