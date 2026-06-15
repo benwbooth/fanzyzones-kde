@@ -76,33 +76,8 @@
               --set FANZYZONES_KDE_PLASMOID_DIR "$out/share/plasma/plasmoids/com.benwbooth.fanzyzones" \
               --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons" \
               --set FANZYZONES_KDE_TRAY_ICON_SOURCE "$out/share/icons/hicolor/scalable/status/fanzyzones-kde.svg" \
-              --set FANZYZONES_KDE_LAYOUT_MENU_QML "$out/share/fanzyzones-kde/qml/LayoutMenu.qml"
-
-            mkdir -p $out/share/dbus-1/services
-            cat > $out/share/dbus-1/services/com.benwbooth.FanzyZones.service <<EOF
-[D-BUS Service]
-Name=com.benwbooth.FanzyZones
-Exec=$out/bin/fanzyzones-kde daemon
-SystemdService=fanzyzones-kde.service
-EOF
-
-            mkdir -p $out/share/systemd/user
-            cat > $out/share/systemd/user/fanzyzones-kde.service <<EOF
-[Unit]
-Description=FanzyZones KDE DBus backend
-PartOf=graphical-session.target
-After=graphical-session.target
-
-[Service]
-Type=dbus
-BusName=com.benwbooth.FanzyZones
-ExecStart=$out/bin/fanzyzones-kde daemon
-Restart=on-failure
-RestartSec=1
-
-[Install]
-WantedBy=default.target
-EOF
+              --set FANZYZONES_KDE_LAYOUT_MENU_QML "$out/share/fanzyzones-kde/qml/LayoutMenu.qml" \
+              --set FANZYZONES_KDE_LAYOUT_EDITOR_QML "$out/share/fanzyzones-kde/qml/LayoutEditor.qml"
           '';
 
           meta = with pkgs.lib; {

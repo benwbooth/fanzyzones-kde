@@ -1528,7 +1528,7 @@ mod tests {
 
         assert!(!request.close_menu);
         match request.action {
-            VisualMenuAction::SetLayout { layout } => assert_eq!(layout, 3),
+            VisualMenuAction::SetLayout { layout, .. } => assert_eq!(layout, 3),
             other => panic!("unexpected action {other:?}"),
         }
     }
@@ -1541,27 +1541,40 @@ mod tests {
     }
 
     #[test]
-    fn creates_custom_layout_from_active_layout() {
-        let mut settings = Settings {
-            active_layout: 1,
-            ..Settings::default()
-        };
+    fn editor_result_upserts_and_activates_layout() {
+        let mut settings = Settings::default();
+        let before = settings.layouts.len();
 
-        create_custom_layout(&mut settings).unwrap();
+        let layout = layout_from_editor(serde_json::json!({
+            "name": "My Layout",
+            "id": serde_json::Value::Null,
+            "zones": [
+                {"x": 0.0, "y": 0.0, "width": 0.5, "height": 1.0},
+                {"x": 0.5, "y": 0.0, "width": 0.5, "height": 1.0},
+            ],
+        }))
+        .unwrap();
+        upsert_layout(&mut settings, layout);
 
-        assert_eq!(settings.layouts.len(), 8);
-        assert_eq!(settings.active_layout, 7);
-        assert!(!settings.layouts[7].is_built_in);
-        assert_eq!(settings.layouts[7].name, "My Layout");
-        assert_eq!(settings.layouts[7].zones, settings.layouts[1].zones);
+        assert_eq!(settings.layouts.len(), before + 1);
+        assert_eq!(settings.active_layout, before);
+        assert!(!settings.layouts[before].is_built_in);
+        assert_eq!(settings.layouts[before].name, "My Layout");
+        assert_eq!(settings.layouts[before].zones.len(), 2);
     }
 
     #[test]
     fn deleting_active_custom_layout_falls_back_to_first_layout() {
         let mut settings = Settings::default();
-        create_custom_layout(&mut settings).unwrap();
+        let mut custom = settings.layouts[0].clone();
+        custom.id = "custom.test".into();
+        custom.name = "Temporary".into();
+        custom.is_built_in = false;
+        settings.layouts.push(custom);
+        settings.active_layout = settings.layouts.len() - 1;
 
-        delete_custom_layout(&mut settings, 7).unwrap();
+        let index = settings.active_layout;
+        delete_custom_layout(&mut settings, index).unwrap();
 
         assert_eq!(settings.layouts.len(), 7);
         assert_eq!(settings.active_layout, 0);
