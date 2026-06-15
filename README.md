@@ -53,9 +53,10 @@ cargo build --release
 ./target/release/fanzyzones-kde install --reload
 ```
 
-After installing, add the **FanzyZones** widget to your system tray (right-click
-the tray → Configure System Tray, or right-click the panel → Add Widgets). The
-in-app **Settings** and the tray menu's **New Custom Layout** open from there.
+Installation adds the **FanzyZones** widget to your system tray automatically.
+(If it doesn't appear, right-click the tray → Configure System Tray and enable
+"FanzyZones".) The in-app **Settings** and the tray menu's **New Custom Layout**
+open from the tray icon.
 
 ## FanzyZones Parity
 

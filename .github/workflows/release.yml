@@ -71,6 +71,7 @@ jobs:
             ./fanzyzones-kde-x86_64-linux install --reload
             ```
 
-            Then add the **FanzyZones** widget to your system tray. The binary is a
-            self-contained static executable — it embeds the plasmoid + KWin
+            It adds the **FanzyZones** widget to your system tray automatically
+            (if it doesn't show, enable it via Configure System Tray). The binary
+            is a self-contained static executable — it embeds the plasmoid + KWin
             script and installs them itself.

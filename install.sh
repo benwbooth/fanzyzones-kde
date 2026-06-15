@@ -41,10 +41,10 @@ echo "Installing the Plasma applet + KWin script ..."
 
 cat <<EOF
 
-FanzyZones KDE is installed.
+FanzyZones KDE is installed and added to your system tray automatically.
   Binary:  $BIN
-  Add the "FanzyZones" widget to your system tray (right-click the tray ->
-  Configure System Tray, or right-click the panel -> Add Widgets).
+  (If you don't see the tray icon, right-click the tray -> Configure System
+  Tray and enable "FanzyZones".)
 
 Re-run this script any time to update. If '$BIN_DIR' is not on your PATH and you
 want to run 'fanzyzones-kde' directly, add it to your shell profile.
