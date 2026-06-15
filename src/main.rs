@@ -788,6 +788,9 @@ pub(crate) enum VisualMenuAction {
     /// Persist a layout change that the KWin script already applied at runtime
     /// (e.g. a keyboard switch), without restarting the script.
     SyncActiveLayout { layout: usize },
+    /// Merge a partial settings object (changed fields only) from the config
+    /// dialog, preserving layouts/active_layout/MRU.
+    UpdateSettings { patch: serde_json::Value },
     Snap { layout: usize, zone: usize },
     SetSnapMode { mode: SnapMode },
     CreateLayout,
@@ -977,6 +980,22 @@ pub(crate) async fn handle_visual_menu_action(
             settings.active_layout = layout;
             config::save(settings)?;
             controller.write_settings(settings).await?;
+        }
+        VisualMenuAction::UpdateSettings { patch } => {
+            let mut current =
+                serde_json::to_value(&*settings).context("serialize current settings")?;
+            if let (Some(obj), Some(fields)) = (current.as_object_mut(), patch.as_object()) {
+                for (key, value) in fields {
+                    obj.insert(key.clone(), value.clone());
+                }
+            }
+            let mut updated: Settings =
+                serde_json::from_value(current).context("apply settings patch")?;
+            updated.normalize();
+            *settings = updated;
+            config::save(settings)?;
+            controller.write_settings(settings).await?;
+            reload_runtime_settings_or_kwin(controller).await?;
         }
         VisualMenuAction::Snap { layout, zone } => {
             ensure_zone_exists(settings, layout, zone)?;

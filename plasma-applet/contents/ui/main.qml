@@ -350,7 +350,10 @@ PlasmoidItem {
                     MenuAction {
                         width: parent.width
                         text: "Settings..."
-                        onClicked: main.invokeAction({"action": "openSettings"})
+                        onClicked: {
+                            main.closeMenu();
+                            Plasmoid.internalAction("configure").trigger();
+                        }
                     }
 
                     Separator { width: parent.width }
