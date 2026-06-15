@@ -368,7 +368,8 @@ Window {
         const indexes = [];
         for (let i = 0; i < layouts.length; i++)
             indexes.push(i);
-        indexes.sort((a, b) => rank(b) - rank(a));
+        const bottomUp = settings.layout_menu_bottom_up !== false;
+        indexes.sort((a, b) => bottomUp ? rank(b) - rank(a) : rank(a) - rank(b));
         return indexes;
     }
 

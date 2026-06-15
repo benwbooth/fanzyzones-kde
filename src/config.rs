@@ -52,6 +52,10 @@ pub struct Settings {
     /// Layout ids ordered most-recently-used first. Maintained by normalize().
     #[serde(default)]
     pub layout_mru: Vec<String>,
+    /// When true (default) the menu lists layouts least-recent at the top and
+    /// the active/most-recent at the bottom; false reverses it.
+    #[serde(default = "default_true")]
+    pub layout_menu_bottom_up: bool,
     /// User overrides for global shortcut keys: action id -> sequence string
     /// (e.g. "Meta+Ctrl+1"). Empty string means the shortcut is unbound.
     #[serde(default)]
@@ -152,6 +156,7 @@ impl Default for Settings {
             modifiers: default_modifiers(),
             active_layout: 0,
             layout_mru: Vec::new(),
+            layout_menu_bottom_up: true,
             shortcut_overrides: std::collections::HashMap::new(),
             gap: default_gap(),
             outer_padding: default_outer_padding(),

@@ -249,8 +249,9 @@ PlasmoidItem {
             const indexes = [];
             for (let i = 0; i < layouts.length; i++)
                 indexes.push(i);
-            // Descending rank: highest (least recent) first, rank 0 (active) last.
-            indexes.sort((a, b) => rank(b) - rank(a));
+            // Descending rank puts the active layout last (bottom); reverse for top.
+            const bottomUp = main.settings.layout_menu_bottom_up !== false;
+            indexes.sort((a, b) => bottomUp ? rank(b) - rank(a) : rank(a) - rank(b));
             return indexes;
         }
 

@@ -75,6 +75,7 @@ KCM.SimpleKCM {
         paddingSpin.value = s.outer_padding || 0;
         shortcutsCheck.checked = s.keyboard_shortcuts_enabled !== false;
         zoneNumbersCheck.checked = s.show_zone_numbers !== false;
+        layoutBottomUpCheck.checked = s.layout_menu_bottom_up !== false;
         opacitySlider.value = s.overlay_opacity !== undefined ? s.overlay_opacity : 0.35;
         if (s.highlight_color)
             colorSwatch.color = Qt.rgba(s.highlight_color.red, s.highlight_color.green, s.highlight_color.blue, 1);
@@ -95,6 +96,7 @@ KCM.SimpleKCM {
             "outer_padding": paddingSpin.value,
             "keyboard_shortcuts_enabled": shortcutsCheck.checked,
             "show_zone_numbers": zoneNumbersCheck.checked,
+            "layout_menu_bottom_up": layoutBottomUpCheck.checked,
             "overlay_opacity": opacitySlider.value,
             "highlight_color": {
                 "red": colorSwatch.color.r,
@@ -176,6 +178,13 @@ KCM.SimpleKCM {
             id: zoneNumbersCheck
             Kirigami.FormData.label: i18n("Overlay:")
             text: i18n("Show zone numbers")
+            onToggled: page.markDirty()
+        }
+
+        QQC2.CheckBox {
+            id: layoutBottomUpCheck
+            Kirigami.FormData.label: i18n("Layout menu:")
+            text: i18n("Active (most recent) layout at the bottom")
             onToggled: page.markDirty()
         }
 
