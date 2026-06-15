@@ -710,13 +710,14 @@ pub(crate) async fn handle_visual_menu_action(
     match action {
         VisualMenuAction::SetLayout { layout, display } => {
             ensure_layout_exists(settings, layout)?;
-            match display {
-                Some(display) => {
-                    let id = settings.layouts[layout].id.clone();
-                    settings.display_layouts.insert(display, id);
-                }
-                None => settings.active_layout = layout,
+            if let Some(display) = display {
+                let id = settings.layouts[layout].id.clone();
+                settings.display_layouts.insert(display, id);
             }
+            // Always update the global active layout too: it drives the overlay/
+            // auto-snap, the MRU ordering, and the fallback for unassigned
+            // displays, so a per-display pick must not leave them out of sync.
+            settings.active_layout = layout;
             config::save(settings)?;
             controller.write_settings(settings).await?;
             if controller.set_runtime_layout(layout).await.is_err() {
