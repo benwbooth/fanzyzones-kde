@@ -970,34 +970,31 @@ pub(crate) fn log_placement_debug(message: impl AsRef<str>) {
 }
 
 /// Dispatch a global shortcut (fired by KGlobalAccel under the "fanzyzones"
-/// component) to the proven daemon action handlers. Snap-to-zone and layout
-/// switching are routed through `handle_visual_menu_action`; window-relative
-/// actions (next/previous zone, snap focused/all, overlay) are not yet wired.
+/// component) by invoking the matching keyless handler in the persistent KWin
+/// script by name, so the action runs with full script state.
 pub(crate) async fn run_global_shortcut(action: &str) -> Result<()> {
-    let controller = KwinController::from_environment()?;
-    let mut settings = load_and_save_settings()?;
-    let count = settings.layouts.len().max(1);
-    let active = settings.active_layout.min(count - 1);
-    let menu_action = if let Some(rest) = action.strip_prefix("snap-zone-") {
-        let zone = rest.parse::<usize>().unwrap_or(1).saturating_sub(1);
-        Some(VisualMenuAction::Snap { layout: active, zone })
-    } else if let Some(rest) = action.strip_prefix("use-layout-") {
-        let layout = rest.parse::<usize>().unwrap_or(1).saturating_sub(1);
-        Some(VisualMenuAction::SyncActiveLayout { layout })
-    } else if action == "next-layout" {
-        Some(VisualMenuAction::SyncActiveLayout { layout: (active + 1) % count })
-    } else if action == "previous-layout" {
-        Some(VisualMenuAction::SyncActiveLayout {
-            layout: (active + count - 1) % count,
-        })
+    let name = if let Some(n) = action.strip_prefix("snap-zone-") {
+        format!("FanzyZones: Snap window to zone {n}")
+    } else if let Some(n) = action.strip_prefix("use-layout-") {
+        format!("FanzyZones: Use layout {n}")
     } else {
-        tracing::debug!(%action, "global shortcut has no daemon handler yet");
-        None
+        match action {
+            "next-zone" => "FanzyZones: Snap window to next zone".to_string(),
+            "previous-zone" => "FanzyZones: Snap window to previous zone".to_string(),
+            "next-layout" => "FanzyZones: Next layout".to_string(),
+            "previous-layout" => "FanzyZones: Previous layout".to_string(),
+            "snap-focused" => "FanzyZones: Snap focused window".to_string(),
+            "snap-all" => "FanzyZones: Snap all windows".to_string(),
+            "toggle-overlay" => "FanzyZones: Toggle zone overlay".to_string(),
+            _ => {
+                tracing::debug!(%action, "unknown global shortcut");
+                return Ok(());
+            }
+        }
     };
-    if let Some(menu_action) = menu_action {
-        handle_visual_menu_action(menu_action, &controller, &mut settings).await?;
-    }
-    Ok(())
+    KwinController::from_environment()?
+        .invoke_shortcut(&name)
+        .await
 }
 
 pub(crate) async fn handle_visual_menu_action(

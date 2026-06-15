@@ -988,4 +988,84 @@ Item {
         onActivated: root.processPendingAction()
     }
 
+    // Keyless action handlers. The real key bindings live in the daemon's
+    // "fanzyzones" KGlobalAccel component; on a press the daemon invokes the
+    // matching handler here by name, so the action runs with full script state
+    // (current layout, window zones, overlay flash).
+    ShortcutHandler {
+        name: "FanzyZones: Snap window to next zone"
+        text: "FanzyZones: Snap window to next zone"
+        sequence: ""
+        onActivated: root.cycleActiveWindow(1)
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Snap window to previous zone"
+        text: "FanzyZones: Snap window to previous zone"
+        sequence: ""
+        onActivated: root.cycleActiveWindow(-1)
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Next layout"
+        text: "FanzyZones: Next layout"
+        sequence: ""
+        onActivated: root.cycleLayout(1)
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Previous layout"
+        text: "FanzyZones: Previous layout"
+        sequence: ""
+        onActivated: root.cycleLayout(-1)
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Snap focused window"
+        text: "FanzyZones: Snap focused window"
+        sequence: ""
+        onActivated: root.snapClientToClosestZone(root.targetWindow())
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Snap all windows"
+        text: "FanzyZones: Snap all windows"
+        sequence: ""
+        onActivated: root.snapAllWindows()
+    }
+
+    ShortcutHandler {
+        name: "FanzyZones: Toggle zone overlay"
+        text: "FanzyZones: Toggle zone overlay"
+        sequence: ""
+        onActivated: {
+            if (root.moving)
+                root.overlayForced = !root.overlayForced;
+        }
+    }
+
+    Repeater {
+        model: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        delegate: Item {
+            ShortcutHandler {
+                name: "FanzyZones: Snap window to zone " + modelData
+                text: "FanzyZones: Snap window to zone " + modelData
+                sequence: ""
+                onActivated: root.snapActiveWindowToZone(modelData - 1)
+            }
+        }
+    }
+
+    Repeater {
+        model: [1, 2, 3, 4, 5, 6, 7, 8, 9]
+        delegate: Item {
+            ShortcutHandler {
+                name: "FanzyZones: Use layout " + modelData
+                text: "FanzyZones: Use layout " + modelData
+                sequence: ""
+                onActivated: root.switchLayout(modelData - 1)
+            }
+        }
+    }
+
 }
