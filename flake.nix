@@ -61,7 +61,9 @@
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "fanzyzones-kde";
-          version = "0.1.3";
+          # Single source of truth: read the version straight from Cargo.toml so
+          # the store path can never drift from the actual binary version.
+          version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).package.version;
           src = ./.;
 
           cargoLock.lockFile = ./Cargo.lock;

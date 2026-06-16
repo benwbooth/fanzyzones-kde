@@ -167,6 +167,17 @@ impl KwinController {
     pub async fn reload_kwin(&self) -> Result<()> {
         let candidates: &[(&str, &[&str])] = &[
             (
+                "busctl",
+                &[
+                    "--user",
+                    "call",
+                    "org.kde.KWin",
+                    "/KWin",
+                    "org.kde.KWin",
+                    "reconfigure",
+                ],
+            ),
+            (
                 "qdbus6",
                 &["org.kde.KWin", "/KWin", "org.kde.KWin.reconfigure"],
             ),
@@ -194,6 +205,31 @@ impl KwinController {
             "could not ask KWin to reconfigure; log out/in or restart KWin\n{}",
             failures.join("\n")
         );
+    }
+
+    /// Whether KWin currently has our script loaded and running. Used to verify
+    /// that an imperative reload actually took, since a failed load can leave
+    /// the script unloaded with no error surfaced.
+    pub async fn is_script_loaded(&self) -> bool {
+        match run(
+            "busctl",
+            &[
+                "--user",
+                "call",
+                "org.kde.KWin",
+                "/Scripting",
+                "org.kde.kwin.Scripting",
+                "isScriptLoaded",
+                "s",
+                SCRIPT_ID,
+            ],
+        )
+        .await
+        {
+            // busctl prints a boolean reply as "b true" / "b false".
+            Ok(result) if result.status == Some(0) => result.stdout.contains("true"),
+            _ => false,
+        }
     }
 
     pub async fn restart_script(&self) -> Result<()> {
@@ -279,6 +315,15 @@ impl KwinController {
         )
         .await
         .context("start FanzyZones KWin script")?;
+
+        // The imperative load above can silently fail to take (busy compositor,
+        // a stale registration, or a session race during a nixos-rebuild
+        // activation), leaving the script unloaded with no error. KWin reliably
+        // re-loads the installed kpackage on reconfigure, so if the script is
+        // not actually running, recover via that instead of leaving it dead.
+        if !self.is_script_loaded().await {
+            let _ = self.reload_kwin().await;
+        }
 
         Ok(())
     }
