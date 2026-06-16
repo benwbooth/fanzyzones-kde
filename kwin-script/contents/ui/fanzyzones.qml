@@ -124,6 +124,7 @@ Item {
             "version": 1,
             "snap_mode": "modifier",
             "modifiers": ["shift"],
+            "snap_trigger_distance": 40,
             "active_layout": 0,
             "display_layouts": {},
             "gap": 0,
@@ -389,11 +390,16 @@ Item {
     // slice maximally at each level, so split() never flattens unexpectedly.
     // ----------------------------------------------------------------------
     readonly property real tileEps: 0.001
-    // "modifier" mode delegates the drag to KWin's native Shift+drag tiling (no
-    // FanzyZones drag overlay). "auto" mode runs FanzyZones' own overlay/snap on
-    // any drag. KWin scripts cannot read held keyboard modifiers, so a
-    // hold-a-modifier overlay isn't possible — those are the two options.
-    readonly property bool useKwinNativeTiling: settings.snap_mode !== "auto"
+    // "modifier" mode delegates the drag to KWin's native Shift+drag tiling.
+    // "auto" runs FanzyZones' overlay on any drag; "distance" arms it when the
+    // cursor is dragged near the top edge (KWin scripts can't read held
+    // modifiers, so distance is the on-demand trigger).
+    readonly property bool useKwinNativeTiling: settings.snap_mode === "modifier"
+    // Set true once a "distance" drag reaches the trigger area; stays armed for
+    // the rest of that drag. prevInBand tracks the previous step so we only arm
+    // on the transition into the band.
+    property bool dragTriggered: false
+    property bool prevInBand: false
 
     function tileScreens() {
         if (Workspace.screens && Workspace.screens.length > 0)
@@ -737,10 +743,25 @@ Item {
             overlayContent.visible = root.modifiersSatisfied() || overlayForced;
     }
 
+    // In distance mode the overlay arms once the cursor is dragged within
+    // snap_trigger_distance of the top edge of the active screen.
+    function nearTrigger() {
+        const dist = Math.max(1, settings.snap_trigger_distance || 100);
+        return (Workspace.cursorPos.y - activeArea.y) <= dist;
+    }
+
     function updateHighlightedZone() {
         if (!movingWindow)
             return;
         root.refreshArea(movingWindow);
+        // Arm only when the cursor crosses INTO the top band (so grabbing a
+        // window already near the top doesn't auto-arm); stays armed afterward.
+        if (settings.snap_mode === "distance") {
+            const inBand = root.nearTrigger();
+            if (inBand && !root.prevInBand)
+                root.dragTriggered = true;
+            root.prevInBand = inBand;
+        }
         highlightedZone = -1;
         const cursor = Workspace.cursorPos;
         const layout = root.layoutForScreen(activeScreen);
@@ -821,10 +842,12 @@ Item {
                     return;
                 root.moving = true;
                 root.moved = false;
+                root.dragTriggered = false;
                 root.movingWindow = client;
                 root.highlightedZone = -1;
                 root.saveOriginalGeometry(client);
                 root.refreshArea(client);
+                root.prevInBand = root.nearTrigger();
                 overlay.showOverlay();
             });
             client.onInteractiveMoveResizeStepped.connect(function() {
@@ -838,7 +861,7 @@ Item {
             client.onInteractiveMoveResizeFinished.connect(function() {
                 if (!root)
                     return;
-                if (root.moving && root.movingWindow === client && root.moved && (root.modifiersSatisfied() || root.overlayForced) && root.highlightedZone >= 0)
+                if (root.moving && root.movingWindow === client && root.moved && (root.modifiersSatisfied() || root.overlayForced || root.dragTriggered) && root.highlightedZone >= 0)
                     root.moveClientToZone(client, root.highlightedZone);
                 root.moving = false;
                 root.moved = false;
@@ -1121,7 +1144,7 @@ Item {
         Item {
             id: overlayContent
             anchors.fill: parent
-            visible: settings.snap_mode === "auto" || root.modifiersSatisfied() || overlayForced || root.layoutPreviewActive
+            visible: settings.snap_mode === "auto" || root.modifiersSatisfied() || overlayForced || root.dragTriggered || root.layoutPreviewActive
 
             Repeater {
                 model: root.layoutForScreen(activeScreen) ? root.layoutForScreen(activeScreen).zones : []

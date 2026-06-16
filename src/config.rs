@@ -13,6 +13,10 @@ pub enum SnapMode {
     /// Shift+drag tiles via KWin's native tiling (the synced per-monitor tiles).
     #[default]
     Modifier,
+    /// FanzyZones overlay arms when the cursor is dragged within
+    /// `snap_trigger_distance` of the top edge (KZones-style); KWin scripts
+    /// can't read held modifiers, so this is the on-demand trigger.
+    Distance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -49,6 +53,10 @@ pub struct Settings {
     pub snap_mode: SnapMode,
     #[serde(default = "default_modifiers")]
     pub modifiers: Vec<ModifierKey>,
+    /// Distance in px from the top edge within which a drag arms the overlay in
+    /// the "distance" snap mode.
+    #[serde(default = "default_snap_trigger_distance")]
+    pub snap_trigger_distance: i32,
     #[serde(default)]
     pub active_layout: usize,
     /// Layout ids ordered most-recently-used first. Maintained by normalize().
@@ -157,6 +165,10 @@ fn default_modifiers() -> Vec<ModifierKey> {
     vec![ModifierKey::Shift]
 }
 
+fn default_snap_trigger_distance() -> i32 {
+    40
+}
+
 fn default_overlay_opacity() -> f64 {
     0.35
 }
@@ -167,6 +179,7 @@ impl Default for Settings {
             version: settings_version(),
             snap_mode: SnapMode::Modifier,
             modifiers: default_modifiers(),
+            snap_trigger_distance: default_snap_trigger_distance(),
             active_layout: 0,
             layout_mru: Vec::new(),
             layout_menu_bottom_up: true,
@@ -232,6 +245,7 @@ impl Settings {
         }
         self.skipped_window_classes.sort();
         self.skipped_window_classes.dedup();
+        self.snap_trigger_distance = self.snap_trigger_distance.max(1);
         self.modifiers.sort();
         self.modifiers.dedup();
         self.overlay_opacity = self.overlay_opacity.clamp(0.05, 0.95);

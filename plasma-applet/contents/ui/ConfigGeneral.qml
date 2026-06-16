@@ -65,7 +65,9 @@ KCM.SimpleKCM {
     function applyToControls(s) {
         const mode = s.snap_mode || "modifier";
         snapAuto.checked = mode === "auto";
-        snapShiftDrag.checked = mode !== "auto";
+        snapDistance.checked = mode === "distance";
+        snapShiftDrag.checked = mode !== "auto" && mode !== "distance";
+        triggerDistanceSpin.value = s.snap_trigger_distance || 100;
         gapSpin.value = s.gap || 0;
         paddingSpin.value = s.outer_padding || 0;
         shortcutsCheck.checked = s.keyboard_shortcuts_enabled !== false;
@@ -87,7 +89,8 @@ KCM.SimpleKCM {
     // Called by the config dialog when Apply/OK is pressed.
     function saveConfig() {
         const patch = {
-            "snap_mode": snapAuto.checked ? "auto" : "modifier",
+            "snap_mode": snapAuto.checked ? "auto" : (snapDistance.checked ? "distance" : "modifier"),
+            "snap_trigger_distance": triggerDistanceSpin.value,
             "gap": gapSpin.value,
             "outer_padding": paddingSpin.value,
             "keyboard_shortcuts_enabled": shortcutsCheck.checked,
@@ -123,6 +126,24 @@ KCM.SimpleKCM {
             onToggled: page.markDirty()
         }
 
+        RowLayout {
+            QQC2.RadioButton {
+                id: snapDistance
+                QQC2.ButtonGroup.group: snapGroup
+                text: i18n("Show overlay when dragging within")
+                onToggled: page.markDirty()
+            }
+            QQC2.SpinBox {
+                id: triggerDistanceSpin
+                from: 10
+                to: 600
+                stepSize: 10
+                enabled: snapDistance.checked
+                onValueModified: page.markDirty()
+            }
+            QQC2.Label { text: i18n("px of the top edge") }
+        }
+
         QQC2.RadioButton {
             id: snapAuto
             QQC2.ButtonGroup.group: snapGroup
@@ -131,7 +152,7 @@ KCM.SimpleKCM {
         }
 
         QQC2.Label {
-            text: i18n("Shift+drag tiles into the layout assigned to each monitor (set\nper-monitor in the tray's display picker) using KWin's built-in\ntiling. Auto-snap instead shows the FanzyZones numbered-zone\noverlay and snaps on any drag, no key held.")
+            text: i18n("Shift+drag tiles into the layout assigned to each monitor (set\nper-monitor in the tray's display picker) using KWin's built-in\ntiling. The overlay mode shows the FanzyZones numbered-zone\noverlay once you drag near the top edge (KWin can't see held\nkeys, so this replaces a modifier). Auto-snap shows it on any drag.")
             wrapMode: Text.WordWrap
             opacity: 0.7
         }
