@@ -294,7 +294,10 @@ async fn install_plasma_integration() -> Result<()> {
     if resources::is_self_contained() {
         resources::extract_all()?;
     }
-    install_icon_theme()?;
+    // The icon theme is cosmetic; never let it abort the functional install.
+    if let Err(err) = install_icon_theme() {
+        eprintln!("fanzyzones-kde: skipping icon theme install: {err:#}");
+    }
     install_cli_wrapper()?;
     remove_daemon_service().await;
     install_plasmoid_package().await?;
@@ -626,6 +629,11 @@ fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
         if source_path.is_dir() {
             copy_dir_all(&source_path, &target_path)?;
         } else {
+            // Sources can live in the read-only Nix store (mode 0444); fs::copy
+            // preserves that, so a re-install would later fail to overwrite a
+            // now-read-only destination. Remove any existing file first and make
+            // the copy writable.
+            let _ = fs::remove_file(&target_path);
             fs::copy(&source_path, &target_path).with_context(|| {
                 format!(
                     "copy {} to {}",
@@ -633,6 +641,11 @@ fn copy_dir_all(source: &Path, target: &Path) -> Result<()> {
                     target_path.display()
                 )
             })?;
+            if let Ok(metadata) = fs::metadata(&target_path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o644);
+                let _ = fs::set_permissions(&target_path, perms);
+            }
         }
     }
     Ok(())
