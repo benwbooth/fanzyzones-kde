@@ -13,9 +13,6 @@ pub enum SnapMode {
     /// Shift+drag tiles via KWin's native tiling (the synced per-monitor tiles).
     #[default]
     Modifier,
-    /// FanzyZones overlay snaps when the configured modifier(s) are held during
-    /// a drag (e.g. Meta or Ctrl); Shift+drag still does KWin tiling.
-    Overlay,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]

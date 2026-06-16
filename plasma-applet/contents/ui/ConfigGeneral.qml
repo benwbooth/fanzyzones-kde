@@ -65,11 +65,7 @@ KCM.SimpleKCM {
     function applyToControls(s) {
         const mode = s.snap_mode || "modifier";
         snapAuto.checked = mode === "auto";
-        snapOverlay.checked = mode === "overlay";
-        snapShiftDrag.checked = mode !== "auto" && mode !== "overlay";
-        const mods = s.modifiers || ["meta"];
-        overlayModifierCombo.currentIndex =
-            mods.indexOf("control") >= 0 ? 1 : (mods.indexOf("alt") >= 0 ? 2 : 0);
+        snapShiftDrag.checked = mode !== "auto";
         gapSpin.value = s.gap || 0;
         paddingSpin.value = s.outer_padding || 0;
         shortcutsCheck.checked = s.keyboard_shortcuts_enabled !== false;
@@ -91,8 +87,7 @@ KCM.SimpleKCM {
     // Called by the config dialog when Apply/OK is pressed.
     function saveConfig() {
         const patch = {
-            "snap_mode": snapAuto.checked ? "auto" : (snapOverlay.checked ? "overlay" : "modifier"),
-            "modifiers": [ ["meta", "control", "alt"][overlayModifierCombo.currentIndex] || "meta" ],
+            "snap_mode": snapAuto.checked ? "auto" : "modifier",
             "gap": gapSpin.value,
             "outer_padding": paddingSpin.value,
             "keyboard_shortcuts_enabled": shortcutsCheck.checked,
@@ -128,22 +123,6 @@ KCM.SimpleKCM {
             onToggled: page.markDirty()
         }
 
-        RowLayout {
-            QQC2.RadioButton {
-                id: snapOverlay
-                QQC2.ButtonGroup.group: snapGroup
-                text: i18n("Hold")
-                onToggled: page.markDirty()
-            }
-            QQC2.ComboBox {
-                id: overlayModifierCombo
-                model: ["Meta", "Ctrl", "Alt"]
-                enabled: snapOverlay.checked
-                onActivated: page.markDirty()
-            }
-            QQC2.Label { text: i18n("and drag (FanzyZones overlay)") }
-        }
-
         QQC2.RadioButton {
             id: snapAuto
             QQC2.ButtonGroup.group: snapGroup
@@ -152,7 +131,7 @@ KCM.SimpleKCM {
         }
 
         QQC2.Label {
-            text: i18n("Shift+drag tiles into the layout assigned to each monitor (set\nper-monitor in the tray's display picker) using KWin's built-in\ntiling. The overlay mode shows the FanzyZones numbered-zone\noverlay when the chosen modifier is held, while Shift+drag still\ntiles. Auto-snap shows the overlay and snaps on any drag.")
+            text: i18n("Shift+drag tiles into the layout assigned to each monitor (set\nper-monitor in the tray's display picker) using KWin's built-in\ntiling. Auto-snap instead shows the FanzyZones numbered-zone\noverlay and snaps on any drag, no key held.")
             wrapMode: Text.WordWrap
             opacity: 0.7
         }

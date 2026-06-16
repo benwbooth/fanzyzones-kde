@@ -389,12 +389,11 @@ Item {
     // slice maximally at each level, so split() never flattens unexpectedly.
     // ----------------------------------------------------------------------
     readonly property real tileEps: 0.001
-    // Only the default "modifier" mode delegates the drag to KWin's native
-    // Shift+drag tiling (no FanzyZones drag overlay). In "auto" mode the overlay
-    // snaps on any drag; in "overlay" mode it snaps when the configured modifier
-    // (e.g. Meta/Ctrl) is held. KWin tiles stay synced in every mode, so
-    // Shift+drag keeps tiling per-monitor regardless.
-    readonly property bool useKwinNativeTiling: settings.snap_mode === "modifier"
+    // "modifier" mode delegates the drag to KWin's native Shift+drag tiling (no
+    // FanzyZones drag overlay). "auto" mode runs FanzyZones' own overlay/snap on
+    // any drag. KWin scripts cannot read held keyboard modifiers, so a
+    // hold-a-modifier overlay isn't possible — those are the two options.
+    readonly property bool useKwinNativeTiling: settings.snap_mode !== "auto"
 
     function tileScreens() {
         if (Workspace.screens && Workspace.screens.length > 0)
@@ -734,10 +733,7 @@ Item {
 
     function refreshOverlayVisibility() {
         root.updateHighlightedZone();
-        // In overlay mode the zones must appear/disappear as the modifier is
-        // pressed/released mid-drag (Qt.keyboardModifiers isn't a reactive
-        // binding), so update it here on each drag step.
-        if (settings.snap_mode !== "auto")
+        if (settings.snap_mode === "modifier")
             overlayContent.visible = root.modifiersSatisfied() || overlayForced;
     }
 
