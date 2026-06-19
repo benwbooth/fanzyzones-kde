@@ -16,7 +16,7 @@
     "ServiceTypes": [
       "KWin/Script"
     ],
-    "Version": "0.2.6",
+    "Version": "0.2.7",
     "Website": "https://github.com/benwbooth/fanzyzones-kde"
   },
   "X-KDE-ConfigModule": "kwin/effects/configs/kcm_kwin4_genericscripted",

@@ -257,22 +257,8 @@ async fn invoke_action_payload(payload: &str) -> Result<String> {
     let request = parse_visual_menu_payload(payload)?;
     let mut settings = load_and_save_settings()?;
     let controller = KwinController::from_environment()?;
-    let should_quit = handle_visual_menu_action(request.action, &controller, &mut settings).await?;
-    let status = if should_quit {
-        "FanzyZones backend stopped".to_string()
-    } else {
-        "KWin integration ready".to_string()
-    };
-    let state = current_applet_state_json(status)?;
-
-    if should_quit {
-        tokio::spawn(async {
-            tokio::time::sleep(std::time::Duration::from_millis(75)).await;
-            std::process::exit(0);
-        });
-    }
-
-    Ok(state)
+    handle_visual_menu_action(request.action, &controller, &mut settings).await?;
+    current_applet_state_json("KWin integration ready")
 }
 
 fn current_applet_state_json(status: impl Into<String>) -> Result<String> {
@@ -681,7 +667,6 @@ pub(crate) enum VisualMenuAction {
     ReloadSettings,
     ReloadKwin,
     About,
-    Quit,
 }
 
 #[derive(Debug)]
@@ -719,7 +704,7 @@ pub(crate) async fn handle_visual_menu_action(
     action: VisualMenuAction,
     controller: &KwinController,
     settings: &mut Settings,
-) -> Result<bool> {
+) -> Result<()> {
     match action {
         VisualMenuAction::SetLayout { layout, display } => {
             ensure_layout_exists(settings, layout)?;
@@ -815,11 +800,8 @@ pub(crate) async fn handle_visual_menu_action(
         VisualMenuAction::About => {
             open_url("https://github.com/benwbooth/fanzyzones-kde").await?;
         }
-        VisualMenuAction::Quit => {
-            return Ok(true);
-        }
     }
-    Ok(false)
+    Ok(())
 }
 
 async fn reload_runtime_settings_or_kwin(controller: &KwinController) -> Result<()> {

@@ -455,14 +455,6 @@ PlasmoidItem {
                             Plasmoid.internalAction("configure").trigger();
                         }
                     }
-
-                    Separator { width: parent.width }
-
-                    MenuAction {
-                        width: parent.width
-                        text: "Quit FanzyZones"
-                        onClicked: main.invokeAction({"action": "quit"})
-                    }
                 }
             }
         }
