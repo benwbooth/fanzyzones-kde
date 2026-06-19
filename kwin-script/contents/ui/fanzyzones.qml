@@ -26,6 +26,13 @@ Item {
     property var activeArea: Qt.rect(0, 0, 1, 1)
     property var activeScreen: null
     property var lastDesktopBeforeSwitch: null
+    // Monotonic recency counter. Each time a real (non-skipped) window is
+    // activated we stamp it with the next value, so we can recover "the window
+    // the user was last using" even after focus moves to a skipped window like
+    // the applet popup — far more reliable than the topmost stacking-order
+    // window, which background helpers (e.g. Steam's hidden always-on-top
+    // windows) can otherwise win.
+    property int fzMruCounter: 0
 
     function log(message) {
         if (settings.debug)
@@ -241,12 +248,42 @@ Item {
         return client.desktops.indexOf(Workspace.currentDesktop) !== -1;
     }
 
+    // Stamp a window as most-recently-used when it gains focus, so menu-driven
+    // actions can target it even after the popup steals activation.
+    function markActive(client) {
+        if (client && !root.isSkippedWindow(client))
+            client.fzMru = ++root.fzMruCounter;
+    }
+
+    function mruValue(client) {
+        return (client && typeof client.fzMru === "number") ? client.fzMru : -1;
+    }
+
     function targetWindow() {
         const active = Workspace.activeWindow;
         if (root.isCandidateWindow(active))
             return active;
 
+        // Active window is skipped (e.g. the applet popup holds focus). Prefer
+        // the most-recently-activated real window rather than the topmost in the
+        // stacking order, which can be a background helper window.
         const all = root.windowsInStackingOrder();
+        let best = null;
+        let bestMru = -1;
+        for (let i = 0; i < all.length; i++) {
+            const client = all[i];
+            if (client === active || !root.isCandidateWindow(client))
+                continue;
+            const mru = root.mruValue(client);
+            if (mru > bestMru) {
+                bestMru = mru;
+                best = client;
+            }
+        }
+        if (best)
+            return best;
+
+        // No recency info yet: fall back to the topmost candidate.
         for (let i = all.length - 1; i >= 0; i--) {
             const client = all[i];
             if (client === active)
@@ -1087,6 +1124,14 @@ Item {
         const all = root.windows();
         for (let i = 0; i < all.length; i++)
             root.handleNewWindow(all[i]);
+        // Seed recency from the window focused at load, then track every focus
+        // change so menu-driven snaps target the right window.
+        root.markActive(Workspace.activeWindow);
+        if (Workspace.windowActivated)
+            Workspace.windowActivated.connect(function(client) {
+                if (root)
+                    root.markActive(client);
+            });
         if (Workspace.windowAdded)
             Workspace.windowAdded.connect(function(client) {
                 if (!root)

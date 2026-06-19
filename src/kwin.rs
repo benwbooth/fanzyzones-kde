@@ -471,12 +471,35 @@ Item {{
         return clientOnCurrentDesktop(client);
     }}
 
+    function mruValue(client) {{
+        return (client && typeof client.fzMru === "number") ? client.fzMru : -1;
+    }}
+
     function targetWindow() {{
         const active = Workspace.activeWindow;
         if (isCandidateWindow(active))
             return active;
 
+        // The applet popup holds focus when a zone is clicked, so the active
+        // window is skipped. Prefer the most-recently-used real window (stamped
+        // by the persistent FanzyZones script) over the topmost stacking-order
+        // window, which can be a hidden background helper (e.g. Steam).
         const all = windowsInStackingOrder();
+        let best = null;
+        let bestMru = -1;
+        for (let i = 0; i < all.length; i++) {{
+            const client = all[i];
+            if (client === active || !isCandidateWindow(client))
+                continue;
+            const mru = mruValue(client);
+            if (mru > bestMru) {{
+                bestMru = mru;
+                best = client;
+            }}
+        }}
+        if (best)
+            return best;
+
         for (let i = all.length - 1; i >= 0; i--) {{
             const client = all[i];
             if (client === active)
