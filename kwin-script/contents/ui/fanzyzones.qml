@@ -377,6 +377,30 @@ Item {
         layoutPreviewTimer.restart();
     }
 
+    // KWin 6.6.6 re-applies the interactive-move geometry when the client
+    // commits after a drag ends ("snap and confine interactive move geometry
+    // when processing xdg-toplevel commits"), silently undoing a snap set
+    // inside the drag-finished handler. Re-assert the zone rect once the move
+    // transaction has settled.
+    property var pendingSnaps: []
+
+    Timer {
+        id: snapSettleTimer
+        interval: 80
+        repeat: false
+        onTriggered: {
+            for (let i = 0; i < root.pendingSnaps.length; i++) {
+                const entry = root.pendingSnaps[i];
+                try {
+                    entry.window.frameGeometry = entry.rect;
+                } catch (error) {
+                    root.log("snap re-assert failed: " + error);
+                }
+            }
+            root.pendingSnaps = [];
+        }
+    }
+
     Timer {
         id: layoutPreviewTimer
         interval: 1100
@@ -528,13 +552,88 @@ Item {
         return Math.max(0, (settings.gap || 0) / 2);
     }
 
-    function tileRelative(rect, parent) {
-        return Qt.rect(
-            (rect.x - parent.x) / parent.w,
-            (rect.y - parent.y) / parent.h,
-            rect.w / parent.w,
-            rect.h / parent.h
-        );
+    // Collect the leaf tiles of a KWin tile tree.
+    function tileLeaves(tile, out) {
+        if (tile.tiles.length === 0) {
+            out.push(tile);
+            return;
+        }
+        for (let i = 0; i < tile.tiles.length; i++)
+            root.tileLeaves(tile.tiles[i], out);
+    }
+
+    // The leaf boxes (screen-relative, 0..1) that tileBuild would produce for
+    // `zones`: the guillotine slices, bottoming out where slicing stops.
+    function tileTargetLeaves(zones, box, out) {
+        if (zones.length <= 1) {
+            out.push(box);
+            return;
+        }
+        let parts = root.tileSlice(zones, box, 'x');
+        if (!(parts && parts.length >= 2))
+            parts = root.tileSlice(zones, box, 'y');
+        if (!parts || parts.length < 2) {
+            out.push(box);
+            return;
+        }
+        for (let i = 0; i < parts.length; i++)
+            root.tileTargetLeaves(parts[i].zones, parts[i].rect, out);
+    }
+
+    function tileBoxMatchesLeaf(box, leaf) {
+        const g = leaf.relativeGeometry;
+        return Math.abs(g.x - box.x) < 0.01 && Math.abs(g.y - box.y) < 0.01
+            && Math.abs(g.width - box.w) < 0.01 && Math.abs(g.height - box.h) < 0.01;
+    }
+
+    function tileLeafAt(leaves, cx, cy) {
+        for (let i = 0; i < leaves.length; i++) {
+            const g = leaves[i].relativeGeometry;
+            if (cx >= g.x && cx <= g.x + g.width && cy >= g.y && cy <= g.y + g.height)
+                return leaves[i];
+        }
+        return null;
+    }
+
+    // Snapshot every window attached to the tree before a rebuild. Windows on
+    // leaf tiles were deliberately snapped there; windows on branch tiles were
+    // stranded by an earlier teardown (KWin re-homes windows from removed
+    // tiles into the root tile, which spans the whole screen).
+    function tileCollectWindows(tile, out) {
+        const wins = tile.windows;
+        const isLeaf = tile.tiles.length === 0;
+        const g = tile.relativeGeometry;
+        for (let i = 0; wins && i < wins.length; i++) {
+            out.push({
+                "window": wins[i],
+                "leaf": isLeaf,
+                "centerX": g.x + g.width / 2,
+                "centerY": g.y + g.height / 2,
+                "geometry": Qt.rect(
+                    wins[i].frameGeometry.x, wins[i].frameGeometry.y,
+                    wins[i].frameGeometry.width, wins[i].frameGeometry.height)
+            });
+        }
+        for (let i = 0; i < tile.tiles.length; i++)
+            root.tileCollectWindows(tile.tiles[i], out);
+    }
+
+    // Windows sitting on a branch tile follow that tile's geometry, so every
+    // display sleep/wake blows them up to the root tile's full-screen rect.
+    // Untile them in place; their current geometry is left alone.
+    function healOrphanedTileWindows(tile) {
+        if (tile.tiles.length === 0)
+            return;
+        const wins = tile.windows;
+        for (let i = 0; wins && i < wins.length; i++) {
+            try {
+                wins[i].tile = null;
+            } catch (error) {
+                root.log("could not untile orphaned window: " + error);
+            }
+        }
+        for (let i = 0; i < tile.tiles.length; i++)
+            root.healOrphanedTileWindows(tile.tiles[i]);
     }
 
     // Recursively build `zones` (which tile `box`, in 0..1 screen coords) into
@@ -557,7 +656,10 @@ Item {
             tile.tiles[tile.tiles.length - 1].split(dir);
         const pad = root.tilePadding();
         for (let i = 0; i < parts.length && i < tile.tiles.length; i++) {
-            tile.tiles[i].relativeGeometry = root.tileRelative(parts[i].rect, box);
+            // Tile.relativeGeometry is normalized to the screen, not the
+            // parent tile, and the slice rects are already in screen units.
+            tile.tiles[i].relativeGeometry = Qt.rect(
+                parts[i].rect.x, parts[i].rect.y, parts[i].rect.w, parts[i].rect.h);
             tile.tiles[i].padding = pad;
         }
         for (let k = 0; k < parts.length && k < tile.tiles.length; k++)
@@ -605,19 +707,71 @@ Item {
     function syncKwinTiles() {
         const screens = root.tileScreens();
         for (let s = 0; s < screens.length; s++) {
-            const layout = root.layoutForScreen(screens[s]);
-            if (!layout || !layout.zones || layout.zones.length === 0)
-                continue;
             try {
-                const tm = Workspace.tilingForScreen(screens[s]);
-                if (!tm || !tm.rootTile)
-                    continue;
-                const rootTile = tm.rootTile;
-                root.clearTile(rootTile);
-                rootTile.padding = root.tilePadding();
-                root.tileBuild(rootTile, layout.zones, { "x": 0, "y": 0, "w": 1, "h": 1 });
+                root.syncTilesForScreen(screens[s]);
             } catch (error) {
                 root.log("syncKwinTiles failed for screen " + s + ": " + error);
+            }
+        }
+    }
+
+    function syncTilesForScreen(screen) {
+        const layout = root.layoutForScreen(screen);
+        if (!layout || !layout.zones || layout.zones.length === 0)
+            return;
+        const tm = Workspace.tilingForScreen(screen);
+        if (!tm || !tm.rootTile)
+            return;
+        const rootTile = tm.rootTile;
+
+        const target = [];
+        root.tileTargetLeaves(layout.zones, { "x": 0, "y": 0, "w": 1, "h": 1 }, target);
+        const leaves = [];
+        root.tileLeaves(rootTile, leaves);
+
+        // Tearing tiles down re-homes their windows into the root tile (full
+        // screen), so a rebuild must only happen when the tree actually
+        // changed. This runs on every screensChanged — which fires on every
+        // display sleep/wake — so the match check is what keeps snapped
+        // windows from exploding to full screen on lock or idle.
+        let matches = leaves.length === target.length;
+        for (let i = 0; matches && i < target.length; i++) {
+            let found = false;
+            for (let j = 0; j < leaves.length && !found; j++)
+                found = root.tileBoxMatchesLeaf(target[i], leaves[j]);
+            matches = found;
+        }
+        if (matches) {
+            root.healOrphanedTileWindows(rootTile);
+            return;
+        }
+
+        const tiledWindows = [];
+        root.tileCollectWindows(rootTile, tiledWindows);
+
+        root.clearTile(rootTile);
+        rootTile.padding = root.tilePadding();
+        root.tileBuild(rootTile, layout.zones, { "x": 0, "y": 0, "w": 1, "h": 1 });
+
+        // Re-home the windows the teardown displaced: deliberately tiled
+        // windows go into the new leaf covering their old spot; windows that
+        // were already stranded on a branch tile are untiled and put back.
+        const newLeaves = [];
+        root.tileLeaves(rootTile, newLeaves);
+        for (let i = 0; i < tiledWindows.length; i++) {
+            const entry = tiledWindows[i];
+            try {
+                if (entry.leaf) {
+                    const leaf = root.tileLeafAt(newLeaves, entry.centerX, entry.centerY);
+                    entry.window.tile = leaf;
+                    if (!leaf)
+                        entry.window.frameGeometry = entry.geometry;
+                } else {
+                    entry.window.tile = null;
+                    entry.window.frameGeometry = entry.geometry;
+                }
+            } catch (error) {
+                root.log("could not re-home tiled window: " + error);
             }
         }
     }
@@ -666,7 +820,17 @@ Item {
         const rect = root.zoneRectForLayout(layout, layout.zones[index], activeArea);
         if (client.setMaximize)
             client.setMaximize(false, false);
+        // A window still assigned to a KWin tile gets yanked back to the
+        // tile's geometry; release it before positioning.
+        try {
+            if (client.tile)
+                client.tile = null;
+        } catch (error) {
+            root.log("could not untile before snap: " + error);
+        }
         client.frameGeometry = rect;
+        root.pendingSnaps.push({ "window": client, "rect": rect });
+        snapSettleTimer.restart();
         client.fanzyZone = index;
         client.fanzyLayout = layoutIndex;
         client.fanzyDesktop = Workspace.currentDesktop;
@@ -723,13 +887,10 @@ Item {
             root.snapClientToClosestZone(all[i]);
     }
 
-    function clearPendingAction() {
-        try {
-            KWin.writeConfig("pendingActionJson", "{}");
-        } catch (error) {
-            log("could not clear pending action: " + error);
-        }
-    }
+    // KWin's script API has no writeConfig, so a processed action cannot be
+    // cleared from kwinrc; the daemon stamps each action with a nonce and we
+    // skip any nonce we have already run.
+    property var lastActionNonce: null
 
     function processPendingAction() {
         let action = {};
@@ -737,17 +898,28 @@ Item {
             action = JSON.parse(KWin.readConfig("pendingActionJson", "{}"));
         } catch (error) {
             print("FanzyZones KDE: could not parse pendingActionJson: " + error);
-            root.clearPendingAction();
             return;
         }
 
         if (!action || !action.action)
             return;
+        if (action.nonce !== undefined) {
+            if (action.nonce === root.lastActionNonce)
+                return;
+            root.lastActionNonce = action.nonce;
+        }
 
         if (action.action === "reloadSettings") {
             root.loadSettings();
+            root.syncKwinTiles();
         } else if (action.action === "setLayout") {
             root.setActiveLayout(action.layout || 0);
+        } else if (action.action === "applyLayout") {
+            // Daemon-driven layout switch: it already persisted the choice, so
+            // unlike switchLayout() this must not write back.
+            root.setActiveLayout(action.layout || 0);
+            root.syncKwinTiles();
+            root.flashLayoutPreview();
         } else if (action.action === "snap") {
             root.moveClientToLayoutZone(root.targetWindow(), action.layout || 0, action.zone || 0);
         } else if (action.action === "snapZone") {
@@ -770,8 +942,6 @@ Item {
             if (root.moving)
                 root.overlayForced = !root.overlayForced;
         }
-
-        root.clearPendingAction();
     }
 
     function refreshOverlayVisibility() {
@@ -1188,7 +1358,11 @@ Item {
 
         Item {
             id: overlayContent
-            anchors.fill: parent
+            // Explicit size: the Dialog derives its size from this mainItem,
+            // so anchoring to the (dialog-sized) parent is circular and leaves
+            // it 0x0 ("trying to show an empty dialog").
+            width: Workspace.virtualScreenSize.width
+            height: Workspace.virtualScreenSize.height
             visible: settings.snap_mode === "auto" || root.modifiersSatisfied() || overlayForced || root.dragTriggered || root.layoutPreviewActive
 
             Repeater {

@@ -4,8 +4,9 @@ use serde_json::json;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::process::Command;
+use tokio::time::sleep;
 
 pub const SCRIPT_ID: &str = "fanzyzones_kde";
 
@@ -268,6 +269,17 @@ impl KwinController {
             .await;
         }
 
+        // unloadScript tears the script down via deleteLater, so the old
+        // registration can linger briefly; loading while it does makes
+        // loadDeclarativeScript return -1 (with exit status 0) and nothing
+        // gets loaded. Wait for the name to actually free up.
+        for _ in 0..20 {
+            if !self.is_script_loaded().await {
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+
         // With the script unloaded, drop global shortcuts whose actions are no
         // longer registered (stale entries from renamed/removed shortcuts or
         // other uninstalled tiling scripts). This lets the reload below register
@@ -285,7 +297,7 @@ impl KwinController {
         )
         .await;
 
-        run_checked(
+        let load = run_checked(
             "busctl",
             &[
                 "--user",
@@ -301,6 +313,12 @@ impl KwinController {
         )
         .await
         .context("load FanzyZones KWin script")?;
+        // A negative id means KWin refused the load (typically because the
+        // plugin name is still registered) even though busctl exited 0.
+        let script_id = parse_busctl_i32(&load.stdout)?;
+        if script_id < 0 {
+            bail!("KWin refused to load the FanzyZones script (loadDeclarativeScript returned {script_id})");
+        }
 
         run_checked(
             "busctl",
@@ -382,8 +400,27 @@ impl KwinController {
         );
     }
 
-    pub async fn set_runtime_layout(&self, _layout_index: usize) -> Result<()> {
-        self.restart_script().await
+    pub async fn set_runtime_layout(&self, layout_index: usize) -> Result<()> {
+        self.apply_pending_action(&json!({"action": "applyLayout", "layout": layout_index}).to_string())
+            .await
+    }
+
+    /// Hand an action to the already-running script instead of restarting it.
+    /// A restart tears down the KWin tile tree, which re-homes tiled windows
+    /// into the full-screen root tile — so it is reserved for when the script
+    /// is not actually loaded.
+    async fn apply_pending_action(&self, action_json: &str) -> Result<()> {
+        if !self.is_script_loaded().await {
+            return self.restart_script().await;
+        }
+        self.write_script_config("pendingActionJson", action_json)
+            .await?;
+        // reconfigure makes KWin reparse kwinrc so the running script's
+        // readConfig sees the fresh settingsJson/pendingActionJson; with the
+        // script already loaded it does not reload or re-run it.
+        self.reload_kwin().await?;
+        self.invoke_shortcut("FanzyZones: Process pending action").await?;
+        Ok(())
     }
 
     pub async fn snap_active_window_to_layout_zone(
@@ -552,7 +589,7 @@ Item {{
     }
 
     pub async fn reload_runtime_settings(&self) -> Result<()> {
-        self.restart_script().await
+        self.apply_pending_action(r#"{"action":"reloadSettings"}"#).await
     }
 
     async fn run_one_shot_script(&self, action_name: &str, source: &str) -> Result<()> {

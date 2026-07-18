@@ -779,12 +779,12 @@ pub(crate) async fn handle_visual_menu_action(
         }
         VisualMenuAction::PreviousZone => {
             controller
-                .invoke_shortcut("FanzyZones: Move active window to previous zone")
+                .invoke_shortcut("FanzyZones: Snap window to previous zone")
                 .await?;
         }
         VisualMenuAction::NextZone => {
             controller
-                .invoke_shortcut("FanzyZones: Move active window to next zone")
+                .invoke_shortcut("FanzyZones: Snap window to next zone")
                 .await?;
         }
         VisualMenuAction::Sync => {
