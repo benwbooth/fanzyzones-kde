@@ -401,7 +401,7 @@ impl KwinController {
     }
 
     pub async fn set_runtime_layout(&self, layout_index: usize) -> Result<()> {
-        self.apply_pending_action(&json!({"action": "applyLayout", "layout": layout_index}).to_string())
+        self.apply_pending_action(json!({"action": "applyLayout", "layout": layout_index}))
             .await
     }
 
@@ -409,16 +409,37 @@ impl KwinController {
     /// A restart tears down the KWin tile tree, which re-homes tiled windows
     /// into the full-screen root tile — so it is reserved for when the script
     /// is not actually loaded.
-    async fn apply_pending_action(&self, action_json: &str) -> Result<()> {
-        if !self.is_script_loaded().await {
-            return self.restart_script().await;
+    ///
+    /// KWin's script API has no writeConfig, so the script can't clear a
+    /// processed action from kwinrc; every action is stamped with a unique
+    /// nonce and the script skips a nonce it has already run. This is what lets
+    /// the same action (e.g. snapping to the same zone twice) fire repeatedly.
+    async fn apply_pending_action(&self, mut action: serde_json::Value) -> Result<()> {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .context("read system time")?
+            .as_millis() as u64;
+        if let Some(obj) = action.as_object_mut() {
+            obj.insert("nonce".into(), json!(nonce));
         }
-        self.write_script_config("pendingActionJson", action_json)
-            .await?;
+        let payload = serde_json::to_string(&action).context("serialize pending action")?;
+
+        // Write the action first so it is in place even if the script has to be
+        // loaded below; then ensure the script is actually running.
+        self.write_script_config("pendingActionJson", &payload).await?;
+        if !self.is_script_loaded().await {
+            self.restart_script().await?;
+        }
         // reconfigure makes KWin reparse kwinrc so the running script's
         // readConfig sees the fresh settingsJson/pendingActionJson; with the
         // script already loaded it does not reload or re-run it.
         self.reload_kwin().await?;
+        // KWin coalesces reconfigure onto its own event loop, so the reparse
+        // lands a beat after the D-Bus call returns. Firing the shortcut too
+        // soon makes the script's readConfig see the PREVIOUS action (a
+        // one-behind lag — e.g. a menu zone click snaps to the last-clicked
+        // zone, so it takes two clicks). Wait for the reparse to settle.
+        sleep(Duration::from_millis(250)).await;
         self.invoke_shortcut("FanzyZones: Process pending action").await?;
         Ok(())
     }
@@ -574,6 +595,12 @@ Item {{
             Math.max(1, Math.round(usableHeight * zone.height - gap))
         );
 
+        // Release any KWin tile the window is bound to, otherwise KWin snaps
+        // its geometry back to the tile the moment we set frameGeometry.
+        try {{
+            if (client.tile)
+                client.tile = null;
+        }} catch (error) {{ }}
         if (client.setMaximize)
             client.setMaximize(false, false);
         client.frameGeometry = rect;
@@ -589,7 +616,8 @@ Item {{
     }
 
     pub async fn reload_runtime_settings(&self) -> Result<()> {
-        self.apply_pending_action(r#"{"action":"reloadSettings"}"#).await
+        self.apply_pending_action(json!({"action": "reloadSettings"}))
+            .await
     }
 
     async fn run_one_shot_script(&self, action_name: &str, source: &str) -> Result<()> {

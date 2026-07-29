@@ -33,6 +33,13 @@ Item {
     // window, which background helpers (e.g. Steam's hidden always-on-top
     // windows) can otherwise win.
     property int fzMruCounter: 0
+    // The real window that held focus immediately before the current active
+    // window. When the applet popup (a skipped window) steals focus to show
+    // the zone menu, this still points at the window the user was looking at,
+    // so a menu click snaps that window — not whichever window happened to
+    // grab focus most in the past (the lifetime MRU counter can be dominated
+    // by a background focus-stealer, e.g. Anki re-activating itself).
+    property var fzLastRealActive: null
 
     function log(message) {
         if (settings.debug)
@@ -249,10 +256,14 @@ Item {
     }
 
     // Stamp a window as most-recently-used when it gains focus, so menu-driven
-    // actions can target it even after the popup steals activation.
+    // actions can target it even after the popup steals activation. Skipped
+    // windows (the applet popup, OSDs) are ignored, so fzLastRealActive keeps
+    // pointing at the real window focused just before the popup opened.
     function markActive(client) {
-        if (client && !root.isSkippedWindow(client))
+        if (client && !root.isSkippedWindow(client)) {
             client.fzMru = ++root.fzMruCounter;
+            root.fzLastRealActive = client;
+        }
     }
 
     function mruValue(client) {
@@ -264,9 +275,14 @@ Item {
         if (root.isCandidateWindow(active))
             return active;
 
-        // Active window is skipped (e.g. the applet popup holds focus). Prefer
-        // the most-recently-activated real window rather than the topmost in the
-        // stacking order, which can be a background helper window.
+        // Active window is skipped (e.g. the applet popup holds focus). The
+        // window the user was using is the real window focused right before it.
+        if (root.isCandidateWindow(root.fzLastRealActive))
+            return root.fzLastRealActive;
+
+        // No usable last-active window (it was closed or moved off-desktop).
+        // Prefer the most-recently-activated real window rather than the
+        // topmost in the stacking order, which can be a background helper.
         const all = root.windowsInStackingOrder();
         let best = null;
         let bestMru = -1;
