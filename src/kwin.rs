@@ -521,10 +521,19 @@ Item {{
         return client.desktops.indexOf(Workspace.currentDesktop) !== -1;
     }}
 
+    // A window stuck reporting active=true while not being the workspace's
+    // active window is a ghost (e.g. a client that died while focused); never
+    // target it. See the persistent script's isGhostWindow for the rationale.
+    function isGhostWindow(client) {{
+        return !!client && client.active === true && client !== Workspace.activeWindow;
+    }}
+
     function isCandidateWindow(client) {{
         if (isSkippedWindow(client))
             return false;
         if (client.minimized || client.hidden || client.hiddenByShowDesktop)
+            return false;
+        if (isGhostWindow(client))
             return false;
         return clientOnCurrentDesktop(client);
     }}

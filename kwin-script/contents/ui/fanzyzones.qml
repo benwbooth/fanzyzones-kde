@@ -243,10 +243,23 @@ Item {
         return [];
     }
 
+    // A window that died while focused (its client process gone) can stay
+    // stuck reporting active=true even though it is no longer the workspace's
+    // active window. KWin keeps exactly one real active window, so that
+    // contradiction marks a ghost: never let it be a snap target. This is the
+    // only in-script signal — KWin exposes no surface/paint state to scripts,
+    // and a ghost is otherwise identical to a live window (same class, pid,
+    // skip flags), so a dead-process window can't be told apart any other way.
+    function isGhostWindow(client) {
+        return !!client && client.active === true && client !== Workspace.activeWindow;
+    }
+
     function isCandidateWindow(client) {
         if (root.isSkippedWindow(client))
             return false;
         if (client.minimized || client.hidden || client.hiddenByShowDesktop)
+            return false;
+        if (root.isGhostWindow(client))
             return false;
         if (client.onAllDesktops)
             return true;
