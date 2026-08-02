@@ -10,7 +10,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, flake-utils, rust-overlay }:
+  outputs = inputs@{ self, nixpkgs, flake-utils, rust-overlay }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         overlays = [ (import rust-overlay) ];
@@ -81,6 +81,12 @@
         };
 
         devShells.default = pkgs.mkShell {
+          FLAKE_INPUTS = builtins.concatStringsSep ":" (
+            map (input: input.outPath) (
+              builtins.attrValues (builtins.removeAttrs inputs [ "self" ])
+            )
+          );
+
           packages = [ rustToolchain pkgs.pkg-config ] ++ runtimeDeps ++ (with pkgs; [
             cargo-watch
             clippy
