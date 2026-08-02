@@ -430,6 +430,23 @@ Item {
         }
     }
 
+    // A newly-appeared window's final geometry / maximize state can settle a
+    // beat after windowAdded, so the fill-the-screen check for macsimize is
+    // deferred briefly rather than run at the instant of creation.
+    property var pendingMacsimize: []
+
+    Timer {
+        id: macsimizeSettleTimer
+        interval: 150
+        repeat: false
+        onTriggered: {
+            const pending = root.pendingMacsimize;
+            root.pendingMacsimize = [];
+            for (let i = 0; i < pending.length; i++)
+                root.macsimizeIfFillingScreen(pending[i]);
+        }
+    }
+
     Timer {
         id: layoutPreviewTimer
         interval: 1100
@@ -1207,6 +1224,48 @@ Item {
         return -1;
     }
 
+    // Whether a window is sized to fill its screen's work area (the maximize
+    // area, which already excludes the panel/taskbar). Catches apps that fill
+    // the screen without setting the fullscreen or maximized flag.
+    function coversWorkArea(client) {
+        if (!client)
+            return false;
+        let area;
+        try {
+            area = Workspace.clientArea(KWin.MaximizeArea,
+                client.screen ? client.screen : Workspace.activeScreen,
+                Workspace.currentDesktop);
+        } catch (error) {
+            return false;
+        }
+        if (!area || area.width < 1 || area.height < 1)
+            return false;
+        const g = client.frameGeometry;
+        const tol = 2;
+        return Math.abs(g.x - area.x) <= tol && Math.abs(g.y - area.y) <= tol
+            && Math.abs(g.width - area.width) <= tol && Math.abs(g.height - area.height) <= tol;
+    }
+
+    // A window can appear already occupying the whole screen — fullscreen,
+    // maximized, or merely sized to fill the work area with no flag set. Some
+    // apps (e.g. Jellyfin) restore that state at launch without ever emitting
+    // a fullscreen/maximize *change*, so the change handlers never fire and
+    // the window is left on the current desktop. Give it the same
+    // move-to-its-own-desktop treatment on appearance.
+    function macsimizeIfFillingScreen(client) {
+        if (!client || root.isSkippedWindow(client))
+            return;
+        const saved = savedWindows[root.windowId(client)];
+        if (saved && saved.macsimized)
+            return;
+        if (client.fullScreen || client.maximizeMode === 3 || root.coversWorkArea(client)) {
+            root.log("macsimize on appearance: " + windowClass(client)
+                + " fullScreen=" + client.fullScreen + " maximizeMode=" + client.maximizeMode
+                + " coversWorkArea=" + root.coversWorkArea(client));
+            root.createDesktopForWindow(client);
+        }
+    }
+
     function createDesktopForWindow(client) {
         if (root.isSkippedWindow(client))
             return;
@@ -1291,7 +1350,11 @@ Item {
             client.desktops[0].name = client.caption || client.desktops[0].name;
     }
 
-    function handleNewWindow(client) {
+    // isNew distinguishes a genuinely-just-created window (Workspace.windowAdded)
+    // from the adoption pass at script load. Only the former is considered for
+    // macsimize-on-appearance — otherwise every script reload would yank all
+    // already-maximized windows onto fresh desktops.
+    function handleNewWindow(client, isNew) {
         if (!client)
             return;
         root.connectWindow(client);
@@ -1315,6 +1378,14 @@ Item {
         if (settings.auto_snap_new_windows)
             root.snapClientToClosestZone(client);
         root.ensureTrailingEmptyDesktop(client);
+
+        // Windows born already filling the screen (e.g. Jellyfin restoring its
+        // maximized state) emit no fullscreen/maximize change, so defer a check
+        // to give them their own desktop once their geometry has settled.
+        if (isNew) {
+            root.pendingMacsimize.push(client);
+            macsimizeSettleTimer.restart();
+        }
     }
 
     Component.onCompleted: {
@@ -1322,7 +1393,7 @@ Item {
         root.syncKwinTiles();
         const all = root.windows();
         for (let i = 0; i < all.length; i++)
-            root.handleNewWindow(all[i]);
+            root.handleNewWindow(all[i], false);
         // Seed recency from the window focused at load, then track every focus
         // change so menu-driven snaps target the right window.
         root.markActive(Workspace.activeWindow);
@@ -1335,7 +1406,7 @@ Item {
             Workspace.windowAdded.connect(function(client) {
                 if (!root)
                     return;
-                root.handleNewWindow(client);
+                root.handleNewWindow(client, true);
             });
         // Rebuild tiles when the screen layout changes (monitor hotplug, scale
         // or resolution change) so newly-present outputs get our zones.
