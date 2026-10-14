@@ -46,6 +46,19 @@ Item {
             print("FanzyZones KDE: " + message);
     }
 
+    DBusCall {
+        id: workspaceCommand
+        service: "com.benwbooth.FanzyZones"
+        path: "/com/benwbooth/FanzyZones"
+        dbusInterface: "com.benwbooth.FanzyZones"
+        method: "InvokeAction"
+        onFailed: root.log("workspace navigation command failed")
+    }
+    function workspaceAction(action) {
+        workspaceCommand.arguments = [JSON.stringify({ action: "workspace", command: { action: action } })];
+        workspaceCommand.call();
+    }
+
     function defaultLayouts() {
         return [
             {
@@ -225,6 +238,8 @@ Item {
     }
 
     function isSkippedWindow(client) {
+        if (settings.nested_enabled)
+            return true;
         if (!client)
             return true;
         if (root.isFanzyZonesWindow(client))
@@ -366,6 +381,7 @@ Item {
     }
 
     function cycleLayout(delta) {
+        if (settings.nested_enabled) return;
         const count = settings.layouts ? settings.layouts.length : 0;
         if (count === 0)
             return;
@@ -378,6 +394,7 @@ Item {
     // Keyboard layout switch: update runtime layout, show feedback, and persist
     // through the daemon so the tray menu/config reflect it.
     function switchLayout(index) {
+        if (settings.nested_enabled) return;
         root.setActiveLayout(index);
         root.syncKwinTiles();
         root.flashLayoutPreview();
@@ -751,6 +768,8 @@ Item {
     // Shift+drag tiling snaps into our zones. Every connected monitor is tiled,
     // and with per-screen tracking each one gets its own layout.
     function syncKwinTiles() {
+        if (settings.nested_enabled)
+            return;
         const screens = root.tileScreens();
         for (let s = 0; s < screens.length; s++) {
             try {
@@ -848,6 +867,7 @@ Item {
     }
 
     function snapActiveWindowToZone(index) {
+        if (settings.nested_enabled) return;
         root.moveClientToZone(root.targetWindow(), index);
     }
 
@@ -908,6 +928,7 @@ Item {
     }
 
     function snapClientToClosestZone(client) {
+        if (settings.nested_enabled) return;
         const index = root.nearestZoneIndex(client);
         if (index >= 0)
             return root.moveClientToZone(client, index);
@@ -928,6 +949,7 @@ Item {
     }
 
     function snapAllWindows() {
+        if (settings.nested_enabled) return;
         const all = root.windows();
         for (let i = 0; i < all.length; i++)
             root.snapClientToClosestZone(all[i]);
@@ -1192,6 +1214,8 @@ Item {
     }
 
     function ensureTrailingEmptyDesktop(client) {
+        if (settings.nested_enabled)
+            return;
         if (!settings.dynamic_workspaces || !Workspace.desktops || Workspace.desktops.length === 0)
             return;
         const last = Workspace.desktops[Workspace.desktops.length - 1];
@@ -1202,6 +1226,8 @@ Item {
     }
 
     function pruneEmptyDesktops(oldDesktop) {
+        if (settings.nested_enabled)
+            return;
         if (!settings.dynamic_workspaces || !Workspace.desktops || Workspace.desktops.length <= 2)
             return;
         const currentIndex = root.desktopIndex(Workspace.currentDesktop);
@@ -1575,14 +1601,14 @@ Item {
         name: "FanzyZones: Snap window to next zone"
         text: "FanzyZones: Snap window to next zone"
         sequence: "Ctrl+Alt+Right"
-        onActivated: root.cycleActiveWindow(1)
+        onActivated: settings.nested_enabled ? root.workspaceAction("right") : root.cycleActiveWindow(1)
     }
 
     ShortcutHandler {
         name: "FanzyZones: Snap window to previous zone"
         text: "FanzyZones: Snap window to previous zone"
         sequence: "Ctrl+Alt+Left"
-        onActivated: root.cycleActiveWindow(-1)
+        onActivated: settings.nested_enabled ? root.workspaceAction("left") : root.cycleActiveWindow(-1)
     }
 
     ShortcutHandler {

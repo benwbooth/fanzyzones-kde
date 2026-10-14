@@ -11,9 +11,10 @@ PlasmoidItem {
     id: main
 
     // The daemon is gone: the applet runs the fanzyzones-kde CLI on demand.
-    readonly property string cli: "$HOME/.local/share/fanzyzones-kde/fanzyzones-kde"
+    readonly property string cli: "\"${XDG_DATA_HOME:-$HOME/.local/share}/fanzyzones-kde/fanzyzones-kde\""
 
     property var settings: ({ "active_layout": 0, "layouts": [] })
+    property var workspaceState: ({ displays: [] })
     property int activeLayout: activeLayoutFromSettings(settings)
     // Connected display names and the one the layout picker is assigning to.
     property var displays: []
@@ -21,16 +22,18 @@ PlasmoidItem {
     property string integrationStatus: "Starting FanzyZones..."
     property int cliNonce: 0
     property var executableCallbacks: ({})
+    readonly property bool panelControls: settings.nested_enabled === true && settings.nested_icon_only === false
+        && Plasmoid.formFactor === PlasmaCore.Types.Horizontal
 
     switchWidth: Kirigami.Units.gridUnit * 18
     switchHeight: Kirigami.Units.gridUnit * 26
-    Layout.minimumWidth: Kirigami.Units.iconSizes.smallMedium
+    Layout.minimumWidth: panelControls ? 210 + (workspaceDisplay().views || []).length * 28 : Kirigami.Units.iconSizes.smallMedium
     Layout.minimumHeight: Kirigami.Units.iconSizes.smallMedium
 
     Plasmoid.icon: "fanzyzones-kde"
     Plasmoid.status: PlasmaCore.Types.ActiveStatus
     toolTipMainText: "FanzyZones"
-    toolTipSubText: "Active layout: " + activeLayoutName() + "\n" + integrationStatus
+    toolTipSubText: (settings.nested_enabled ? "Nested workspace" : "Active layout: " + activeLayoutName()) + "\n" + integrationStatus
 
     function activeLayoutFromSettings(value) {
         if (value && value.active_layout !== undefined)
@@ -56,7 +59,8 @@ PlasmoidItem {
         displays = enumerateDisplays();
         // Keep the picker target valid; default to the first display.
         if (main.displays.indexOf(main.targetDisplay) < 0)
-            main.targetDisplay = main.displays.length > 0 ? main.displays[0] : "";
+            main.targetDisplay = main.Window.window && main.Window.window.screen ? main.Window.window.screen.name
+                : main.displays.length > 0 ? main.displays[0] : "";
         if (state.status !== undefined)
             integrationStatus = state.status;
     }
@@ -105,8 +109,11 @@ PlasmoidItem {
             const cb = main.executableCallbacks[source];
             delete main.executableCallbacks[source];
             executable.disconnectSource(source);
-            if (cb)
-                cb((data["stdout"] || "").trim());
+            if (data["exit code"] !== 0 && data["exit code"] !== undefined) {
+                main.integrationStatus = (data["stderr"] || "FanzyZones command failed").trim();
+                return;
+            }
+            if (cb) cb((data["stdout"] || "").trim());
         }
     }
 
@@ -125,9 +132,36 @@ PlasmoidItem {
         runCli("state-json", function(out) {
             try {
                 applyStateJson(out);
+                if (settings.nested_enabled) refreshWorkspace();
             } catch (error) {
                 integrationStatus = "Error: " + error;
             }
+        });
+    }
+
+    function refreshWorkspace() {
+        runCli("workspace status", function(out) {
+            try { workspaceState = JSON.parse(out); }
+            catch (error) { integrationStatus = "Workspace is unavailable"; }
+        });
+    }
+    function workspaceDisplay() {
+        const all = workspaceState.displays || [];
+        return all.find(function(d) { return d.name === targetDisplay; }) || all[0] || { views: [] };
+    }
+    function workspaceButtonActive(action, slot) {
+        const current = workspaceDisplay();
+        if (slot) return (current.activeViews || []).indexOf(slot) >= 0;
+        return !!current.camera && current.camera.node === (action === "desktop" ? current.desktop : action === "show-all" ? current.root : "");
+    }
+    function workspaceCommand(action, slot) {
+        const command = { action: action };
+        if (targetDisplay) command.display = targetDisplay;
+        if (slot) command.slot = slot;
+        const source = "invoke-action " + shellQuote(JSON.stringify({ action: "workspace", command: command }));
+        runCli(source, function(out) {
+            try { applyStateJson(out); } catch (error) { integrationStatus = "Workspace action failed"; }
+            refreshWorkspace();
         });
     }
 
@@ -217,17 +251,54 @@ PlasmoidItem {
         menuPopup.visible = false;
     }
 
-    compactRepresentation: MouseArea {
-        acceptedButtons: Qt.LeftButton
-        hoverEnabled: true
-        onClicked: main.toggleMenu()
-
-        Kirigami.Icon {
-            anchors.centerIn: parent
-            width: Math.max(Kirigami.Units.iconSizes.smallMedium, Math.min(parent.width, parent.height) - 2)
-            height: width
-            source: Qt.resolvedUrl("../images/fanzyzones-kde.svg")
-            isMask: true
+    Timer {
+        interval: 1500
+        repeat: true
+        running: main.settings.nested_enabled === true && (main.panelControls || menuPopup.visible)
+        onTriggered: main.refreshWorkspace()
+    }
+    compactRepresentation: Item {
+        implicitWidth: main.Layout.minimumWidth
+        implicitHeight: Kirigami.Units.iconSizes.smallMedium
+        MouseArea {
+            anchors.fill: parent
+            acceptedButtons: Qt.RightButton
+            onClicked: main.toggleMenu()
+        }
+        Row {
+            anchors.fill: parent
+            spacing: 3
+            MouseArea {
+                width: main.panelControls ? parent.height : parent.width
+                height: parent.height
+                onClicked: main.toggleMenu()
+                Kirigami.Icon {
+                    anchors.centerIn: parent
+                    width: Math.max(Kirigami.Units.iconSizes.smallMedium, Math.min(parent.width, parent.height) - 2)
+                    height: width
+                    source: Qt.resolvedUrl("../images/fanzyzones-kde.svg")
+                    isMask: true
+                }
+            }
+            Repeater {
+                model: !main.panelControls ? [] : [
+                    { label: "←", action: "back" }, { label: "→", action: "forward" },
+                    { label: "Desktop", action: "desktop" }, { label: "All", action: "show-all" }
+                ].concat((main.workspaceDisplay().views || []).map(function(slot) { return { label: String(slot), action: "load-view", slot: slot }; }))
+                Rectangle {
+                    required property var modelData
+                    width: modelData.label === "Desktop" ? 58 : 26
+                    height: parent.height
+                    radius: 4
+                    color: main.workspaceButtonActive(modelData.action, modelData.slot) ? Kirigami.Theme.highlightColor : "transparent"
+                    Text {
+                        anchors.centerIn: parent
+                        text: modelData.label
+                        color: main.workspaceButtonActive(modelData.action, modelData.slot) ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+                    }
+                    MouseArea { anchors.fill: parent; onClicked: main.workspaceCommand(modelData.action, modelData.slot) }
+                }
+            }
         }
     }
 
@@ -401,8 +472,82 @@ PlasmoidItem {
                         visible: main.displays.length > 0
                     }
 
+                    MenuAction {
+                        width: parent.width
+                        text: main.settings.nested_enabled ? "●  Nested workspace" : "Enable nested workspace"
+                        onClicked: main.workspaceCommand(main.settings.nested_enabled ? "disable" : "enable")
+                    }
+
+                    Column {
+                        width: parent.width
+                        spacing: 3
+                        visible: main.settings.nested_enabled === true
+
+                        Row {
+                            width: parent.width
+                            spacing: 4
+                            Repeater {
+                                model: [ { text: "←", action: "back" }, { text: "→", action: "forward" },
+                                    { text: "Desktop", action: "desktop" }, { text: "Everything", action: "show-all" } ]
+                                MenuPill {
+                                    required property var modelData
+                                    width: (menuColumn.width - 12) / 4
+                                    text: modelData.text
+                                    checked: main.workspaceButtonActive(modelData.action)
+                                    onClicked: main.workspaceCommand(modelData.action)
+                                }
+                            }
+                        }
+                        SectionLabel { text: "Saved views · Shift-click to save" }
+                        Row {
+                            width: parent.width
+                            spacing: 3
+                            Repeater {
+                                model: 9
+                                Rectangle {
+                                    required property int index
+                                    width: (menuColumn.width - 24) / 9
+                                    height: 28
+                                    radius: 3
+                                    readonly property bool saved: (main.workspaceDisplay().views || []).indexOf(index + 1) >= 0
+                                    readonly property bool selected: main.workspaceButtonActive("load-view", index + 1)
+                                    color: selected ? dialog.accent : saved ? dialog.checkedBg : dialog.cardBg
+                                    border.color: saved ? dialog.accent : dialog.separatorColor
+                                    Text { anchors.centerIn: parent; text: index + 1; color: dialog.textColor }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        onClicked: function(mouse) {
+                                            main.workspaceCommand((mouse.modifiers & Qt.ShiftModifier) ? "save-view" : "load-view", index + 1);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Repeater {
+                            model: [ { text: "Arrange windows", action: "arrange" }, { text: "Float all windows", action: "float-all" },
+                                { text: "Focus window", action: "focus" }, { text: "Frame a view…", action: "frame" },
+                                { text: "Float / dock window", action: "toggle-float" }, { text: "Leave focused app alone", action: "exclude-app" },
+                                { text: "Undo arrangement change", action: "undo" } ]
+                            MenuAction {
+                                required property var modelData
+                                width: menuColumn.width
+                                text: modelData.text
+                                onClicked: { main.workspaceCommand(modelData.action); main.closeMenu(); }
+                            }
+                        }
+                        Repeater {
+                            model: main.settings.nested_excluded_apps || []
+                            MenuAction {
+                                required property string modelData
+                                width: menuColumn.width
+                                text: "Arrange " + modelData + " again"
+                                onClicked: main.invokeAction({ action: "workspace", command: { action: "include-app", app: modelData } }, false)
+                            }
+                        }
+                    }
+
                     Repeater {
-                        model: dialog.orderedLayoutIndexes()
+                        model: main.settings.nested_enabled ? [] : dialog.orderedLayoutIndexes()
 
                         delegate: LayoutRow {
                             required property int modelData
@@ -442,6 +587,7 @@ PlasmoidItem {
                     MenuAction {
                         width: parent.width
                         text: "New Custom Layout…"
+                        visible: !main.settings.nested_enabled
                         onClicked: main.openCreateLayout()
                     }
 
@@ -454,6 +600,16 @@ PlasmoidItem {
                             main.closeMenu();
                             Plasmoid.internalAction("configure").trigger();
                         }
+                    }
+                    MenuAction {
+                        width: parent.width
+                        text: "Releases…"
+                        onClicked: { main.closeMenu(); Qt.openUrlExternally("https://github.com/benwbooth/fanzyzones-kde/releases"); }
+                    }
+                    MenuAction {
+                        width: parent.width
+                        text: "Report a problem…"
+                        onClicked: { main.closeMenu(); Qt.openUrlExternally("https://github.com/benwbooth/fanzyzones-kde/issues/new"); }
                     }
                 }
             }

@@ -3,3 +3,4 @@
 /.direnv
 .qmlls.ini
 *.kpack
+__pycache__/

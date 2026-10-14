@@ -47,6 +47,17 @@ impl Default for RgbColor {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Settings {
+    /// Optional nested workspace mode; ordinary zone layouts remain available.
+    #[serde(default)]
+    pub nested_enabled: bool,
+    #[serde(default = "default_workspace_animation")]
+    pub nested_animation_ms: u32,
+    #[serde(default = "default_workspace_gap")]
+    pub nested_gap: u32,
+    #[serde(default = "default_true")]
+    pub nested_icon_only: bool,
+    #[serde(default)]
+    pub nested_excluded_apps: Vec<String>,
     #[serde(default = "settings_version")]
     pub version: u32,
     #[serde(default)]
@@ -128,6 +139,13 @@ fn settings_version() -> u32 {
     1
 }
 
+fn default_workspace_animation() -> u32 {
+    460
+}
+fn default_workspace_gap() -> u32 {
+    8
+}
+
 fn default_true() -> bool {
     true
 }
@@ -176,6 +194,11 @@ fn default_overlay_opacity() -> f64 {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            nested_enabled: false,
+            nested_animation_ms: default_workspace_animation(),
+            nested_gap: default_workspace_gap(),
+            nested_icon_only: true,
+            nested_excluded_apps: Vec::new(),
             version: settings_version(),
             snap_mode: SnapMode::Modifier,
             modifiers: default_modifiers(),
@@ -213,6 +236,16 @@ impl Default for Settings {
 
 impl Settings {
     pub fn normalize(&mut self) {
+        self.nested_animation_ms = self.nested_animation_ms.min(2000);
+        self.nested_gap = self.nested_gap.min(64);
+        self.nested_excluded_apps = self
+            .nested_excluded_apps
+            .iter()
+            .map(|s| s.trim().to_lowercase())
+            .filter(|s| !s.is_empty())
+            .collect();
+        self.nested_excluded_apps.sort();
+        self.nested_excluded_apps.dedup();
         if self.layouts.is_empty() {
             self.layouts = built_in_layouts();
             self.active_layout = 0;
@@ -265,7 +298,6 @@ impl Settings {
             .map(|layout| layout.name.as_str())
             .unwrap_or("Unknown")
     }
-
 }
 
 pub fn project_dirs() -> Result<ProjectDirs> {

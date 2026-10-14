@@ -1,21 +1,50 @@
 # FanzyZones KDE
 
 FanzyZones KDE is a KDE Plasma version of FanzyZones: a FancyZones-style window
-layout tool with a Plasma system-tray applet and a bundled KWin script. The Rust
-backend owns installation, settings, layout selection, and KWin reloads. The KWin
-script owns live window movement, drag overlays, keyboard shortcuts, virtual
-desktops, and maximize/fullscreen handling.
+layout tool with a Plasma applet, a KWin zone-layout script, and an optional
+Trellis-style nested workspace. Dock windows into nested spaces, group different
+apps into tabs, resize their seams, and zoom between views while continuing to
+work in the real application windows.
 
 ## Status
 
-This is an initial working project scaffold with real Rust code, an installable
-Plasma 6 applet, an installable KWin package, shared JSON settings, and tests for
-layout/config logic.
+Version 0.3 adds nested workspaces alongside the existing zone layouts. The
+nested workspace targets Plasma 6.6+ on Wayland with OpenGL compositing. See
+[the feature and validation matrix](docs/trellis-parity.md) for coverage and
+platform requirements.
+
+## Nested workspace
+
+After installing, choose **Enable nested workspace** from the applet, or run:
+
+```sh
+fanzyzones-kde workspace enable
+fanzyzones-kde workspace arrange
+```
+
+- Dock by dragging a title strip to a window or screen edge. Drop in the middle
+  after a brief pause to form tabs; drag a tab out to detach it.
+- Drag seams to resize adjacent spaces. Shift-drag a tab to move its whole group.
+- Use `Ctrl+Alt+Space` for everything, `Ctrl+Alt+Return` for one window,
+  `Ctrl+Alt+Up/Down` for levels, and `Ctrl+Alt+[/]` for view history.
+- Save nine views per display with `Ctrl+Alt+Shift+1` through `9`; recall them
+  with `Ctrl+Alt+1` through `9`.
+- With the matching native input module, hold Alt and pinch with two fingers,
+  pinch on bare Desktop, or hold Meta+Shift and drag a rectangle. Three-finger
+  pinch and the `Meta+Shift+R` framing shortcut also work without that module.
+- Disable the workspace to restore normal window positions and decorations:
+  `fanzyzones-kde workspace disable`. The emergency shortcut is
+  `Meta+Ctrl+Shift+F12`.
+
+Nix packages include the native input module. Keep the flake's nixpkgs input
+aligned with your desktop, as the Home Manager example below does. Portable
+Rust binaries need the [separately built module](docs/trellis-parity.md#native-input-module)
+for two-finger gestures and modifier-drag framing.
 
 ## Installation
 
 FanzyZones KDE ships as a single **self-contained static binary** (x86_64) that
-embeds the Plasma applet and KWin script and installs them itself. It needs
+embeds the Plasma applet, KWin script and workspace effect and installs them itself. It needs
 **KDE Plasma 6** (Wayland or X11).
 
 ### Quick install
@@ -154,9 +183,10 @@ the embedded plasmoid + KWin script (when running as a standalone binary),
 installs/upgrades them with `kpackagetool6`, writes a small CLI wrapper the
 applet calls, syncs settings into `kwinrc`, and reloads the KWin script.
 
-There is no background daemon: the applet shells out to this CLI on demand. The
-backend is pure Rust (no Qt) — the visual menu, settings, and layout editor all
-run in the Plasma applet's own QML.
+The applet calls the CLI on demand. A small D-Bus activated Rust service stores
+workspace state atomically and accepts commands; KWin owns all live window
+operations. Menus and settings use Plasma QML. Native gestures use the optional
+module compiled for the exact installed KWin version.
 
 ## Layout JSON
 

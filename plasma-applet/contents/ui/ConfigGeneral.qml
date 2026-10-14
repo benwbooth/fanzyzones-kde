@@ -10,7 +10,7 @@ import org.kde.plasma.plasma5support as P5Support
 KCM.SimpleKCM {
     id: page
 
-    readonly property string cli: "$HOME/.local/share/fanzyzones-kde/fanzyzones-kde"
+    readonly property string cli: "\"${XDG_DATA_HOME:-$HOME/.local/share}/fanzyzones-kde/fanzyzones-kde\""
 
     property var settings: ({})
     // Suppress change handlers while we populate controls from the CLI.
@@ -69,6 +69,9 @@ KCM.SimpleKCM {
         snapShiftDrag.checked = mode !== "auto" && mode !== "distance";
         triggerDistanceSpin.value = s.snap_trigger_distance || 100;
         gapSpin.value = s.gap || 0;
+        workspaceGapSpin.value = s.nested_gap === undefined ? 8 : s.nested_gap;
+        workspaceMotionSpin.value = s.nested_animation_ms === undefined ? 460 : s.nested_animation_ms;
+        workspaceIconOnly.checked = s.nested_icon_only !== false;
         paddingSpin.value = s.outer_padding || 0;
         shortcutsCheck.checked = s.keyboard_shortcuts_enabled !== false;
         zoneNumbersCheck.checked = s.show_zone_numbers !== false;
@@ -92,6 +95,9 @@ KCM.SimpleKCM {
             "snap_mode": snapAuto.checked ? "auto" : (snapDistance.checked ? "distance" : "modifier"),
             "snap_trigger_distance": triggerDistanceSpin.value,
             "gap": gapSpin.value,
+            "nested_gap": workspaceGapSpin.value,
+            "nested_animation_ms": workspaceMotionSpin.value,
+            "nested_icon_only": workspaceIconOnly.checked,
             "outer_padding": paddingSpin.value,
             "keyboard_shortcuts_enabled": shortcutsCheck.checked,
             "show_zone_numbers": zoneNumbersCheck.checked,
@@ -116,6 +122,29 @@ KCM.SimpleKCM {
     }
 
     Kirigami.FormLayout {
+        QQC2.Label {
+            Kirigami.FormData.label: i18n("Nested workspace:")
+            text: i18n("Enable from the tray menu to dock, group and zoom between windows.")
+            wrapMode: Text.WordWrap
+        }
+        QQC2.SpinBox {
+            id: workspaceGapSpin
+            Kirigami.FormData.label: i18n("Workspace gaps:")
+            from: 0; to: 64
+            onValueModified: page.markDirty()
+        }
+        QQC2.SpinBox {
+            id: workspaceMotionSpin
+            Kirigami.FormData.label: i18n("Workspace animation (ms):")
+            from: 0; to: 2000; stepSize: 20
+            onValueModified: page.markDirty()
+        }
+        QQC2.CheckBox {
+            id: workspaceIconOnly
+            Kirigami.FormData.label: i18n("Panel appearance:")
+            text: i18n("Icon only (turn off for navigation controls when added directly to a panel)")
+            onToggled: page.markDirty()
+        }
         QQC2.ButtonGroup { id: snapGroup }
 
         QQC2.RadioButton {

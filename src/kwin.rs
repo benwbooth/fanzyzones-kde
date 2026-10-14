@@ -58,7 +58,10 @@ impl KwinController {
                 .and_then(|exe| exe.parent().map(Path::to_path_buf))
                 .map(|bin| bin.join("../share/fanzyzones-kde/kwin-script"))
                 .unwrap_or_default(),
-            env::current_dir().ok().map(|d| d.join("kwin-script")).unwrap_or_default(),
+            env::current_dir()
+                .ok()
+                .map(|d| d.join("kwin-script"))
+                .unwrap_or_default(),
         ];
         let script_dir = candidates
             .iter()
@@ -112,7 +115,9 @@ impl KwinController {
         for key in ["ElectricBorderTiling", "ElectricBorderMaximize"] {
             run_checked(
                 "kwriteconfig6",
-                &["--file", "kwinrc", "--group", "Windows", "--key", key, "false"],
+                &[
+                    "--file", "kwinrc", "--group", "Windows", "--key", key, "false",
+                ],
             )
             .await
             .with_context(|| format!("disable KWin {key}"))?;
@@ -125,6 +130,7 @@ impl KwinController {
         self.write_script_config("settingsJson", &json)
             .await
             .context("write FanzyZones settings to kwinrc")?;
+        crate::workspace::write_config(settings).await?;
         Ok(())
     }
 
@@ -426,7 +432,8 @@ impl KwinController {
 
         // Write the action first so it is in place even if the script has to be
         // loaded below; then ensure the script is actually running.
-        self.write_script_config("pendingActionJson", &payload).await?;
+        self.write_script_config("pendingActionJson", &payload)
+            .await?;
         if !self.is_script_loaded().await {
             self.restart_script().await?;
         }
@@ -440,7 +447,8 @@ impl KwinController {
         // one-behind lag — e.g. a menu zone click snaps to the last-clicked
         // zone, so it takes two clicks). Wait for the reparse to settle.
         sleep(Duration::from_millis(250)).await;
-        self.invoke_shortcut("FanzyZones: Process pending action").await?;
+        self.invoke_shortcut("FanzyZones: Process pending action")
+            .await?;
         Ok(())
     }
 
@@ -711,15 +719,17 @@ Item {{
 }
 
 fn installed_script_main() -> PathBuf {
-    home_dir()
-        .join(".local/share/kwin/scripts")
+    crate::xdg_data_home()
+        .unwrap_or_else(|_| home_dir().join(".local/share"))
+        .join("kwin/scripts")
         .join(SCRIPT_ID)
         .join("contents/ui/fanzyzones.qml")
 }
 
 fn old_installed_script_main() -> PathBuf {
-    home_dir()
-        .join(".local/share/kwin/scripts")
+    crate::xdg_data_home()
+        .unwrap_or_else(|_| home_dir().join(".local/share"))
+        .join("kwin/scripts")
         .join(SCRIPT_ID)
         .join("contents/ui/main.qml")
 }

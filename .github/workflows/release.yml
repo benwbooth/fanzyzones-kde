@@ -1,9 +1,9 @@
 name: release
 
 # Builds the portable, self-contained static binary and publishes it as a
-# release. The plasmoid, KWin script and icons are embedded, so this single file
-# is the whole product: download it, run `./fanzyzones-kde install`, and it
-# unpacks + registers everything itself.
+# release. The plasmoid, KWin script, workspace effect and icons are embedded.
+# Exact two-finger input additionally needs the optional module built against
+# the user's KWin version; the Nix package includes that module.
 #
 # Cut a release by pushing a tag, e.g.:  git tag v0.1.0 && git push origin v0.1.0
 on:
@@ -29,6 +29,11 @@ jobs:
 
       - name: Build static binary
         run: cargo build --release --locked --target x86_64-unknown-linux-musl
+
+      - name: Check workspace model and storage
+        run: |
+          cargo test --locked
+          node --test tests/workspace.test.mjs
 
       - name: Package
         run: |
@@ -73,5 +78,9 @@ jobs:
 
             It adds the **FanzyZones** widget to your system tray automatically
             (if it doesn't show, enable it via Configure System Tray). The binary
-            is a self-contained static executable — it embeds the plasmoid + KWin
-            script and installs them itself.
+            embeds the plasmoid, KWin script and optional nested workspace effect.
+
+            Two-finger gestures and Meta+Shift pointer framing require a native
+            module matching your KWin version. The Nix package includes it; see
+            the [workspace setup guide](https://github.com/benwbooth/fanzyzones-kde/blob/main/docs/trellis-parity.md)
+            for non-Nix builds and validation coverage.

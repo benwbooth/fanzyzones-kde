@@ -3,6 +3,7 @@ mod kwin;
 mod layout;
 mod resources;
 mod shortcuts;
+mod workspace;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -31,6 +32,35 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum CliCommand {
+    /// Control the nested, zoomable workspace. Every action also has a fanzyzones:// URL.
+    Workspace {
+        #[arg(value_enum)]
+        action: workspace::Action,
+        #[arg(long)]
+        display: Option<String>,
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=9))]
+        slot: Option<u8>,
+        #[arg(long)]
+        window: Option<String>,
+        /// Window identity or space node to dock beside/into.
+        #[arg(long)]
+        target: Option<String>,
+        #[arg(long, value_parser = ["left", "right", "top", "bottom", "center"])]
+        edge: Option<String>,
+        /// Move the entire tab group.
+        #[arg(long)]
+        group: bool,
+        #[arg(long)]
+        app: Option<String>,
+        /// Frame a normalized rectangle, as x,y,width,height.
+        #[arg(long)]
+        rect: Option<String>,
+    },
+    /// Handle an allowlisted fanzyzones:// command URL.
+    HandleUrl { url: String },
+    /// D-Bus activated persistence helper; normally not started manually.
+    #[command(hide = true)]
+    ServeWorkspace,
     /// Install or upgrade the Plasma applet, DBus activation service, and KWin script.
     Install {
         /// Ask KWin to reload after writing config.
@@ -53,10 +83,7 @@ enum CliCommand {
     /// Print the FanzyZones shortcuts as JSON [{id, friendly, sequence}].
     Shortcuts,
     /// Rebind a FanzyZones shortcut by id to a key sequence (empty unbinds it).
-    SetShortcut {
-        id: String,
-        sequence: String,
-    },
+    SetShortcut { id: String, sequence: String },
     /// Write the current JSON settings into KWin's script config.
     WriteConfig,
     /// Ask KWin to reconfigure.
@@ -118,6 +145,54 @@ fn run_cli(command: CliCommand) -> Result<()> {
 
 async fn run_cli_async(command: CliCommand) -> Result<()> {
     match command {
+        CliCommand::ServeWorkspace => workspace::serve().await,
+        CliCommand::HandleUrl { url } => {
+            println!(
+                "{}",
+                workspace::dispatch(workspace::parse_url(&url)?).await?
+            );
+            Ok(())
+        }
+        CliCommand::Workspace {
+            action,
+            display,
+            slot,
+            window,
+            target,
+            edge,
+            group,
+            app,
+            rect,
+        } => {
+            let mut payload = serde_json::json!({"action": action.name()});
+            if let Some(display) = display {
+                payload["display"] = display.into();
+            }
+            if let Some(slot) = slot {
+                payload["slot"] = slot.into();
+            }
+            if let Some(window) = window {
+                payload["window"] = window.into();
+            }
+            if let Some(target) = target {
+                payload["target"] = target.into();
+            }
+            if let Some(edge) = edge {
+                payload["edge"] = edge.into();
+            }
+            if group {
+                payload["group"] = true.into();
+            }
+            if let Some(app) = app {
+                payload["app"] = app.into();
+            }
+            if let Some(rect) = rect {
+                let parsed = workspace::parse_url(&format!("fanzyzones://frame?rect={rect}"))?;
+                payload["rect"] = parsed["rect"].clone();
+            }
+            println!("{}", workspace::dispatch(payload).await?);
+            Ok(())
+        }
         CliCommand::Install { reload } => {
             install_plasma_integration().await?;
             let settings = load_and_save_settings()?;
@@ -125,6 +200,7 @@ async fn run_cli_async(command: CliCommand) -> Result<()> {
                 .sync(&settings, reload)
                 .await?;
             if reload {
+                workspace::refresh_effect().await?;
                 shortcuts::apply_default_bindings().await?;
             }
             Ok(())
@@ -216,7 +292,12 @@ async fn run_cli_async(command: CliCommand) -> Result<()> {
                 .snap_active_window_to_layout_zone(&settings, layout_index, zone_index)
                 .await
         }
-        CliCommand::Disable => KwinController::from_environment()?.disable_script().await,
+        CliCommand::Disable => {
+            if load_and_save_settings()?.nested_enabled {
+                workspace::dispatch(serde_json::json!({"action":"disable"})).await?;
+            }
+            KwinController::from_environment()?.disable_script().await
+        }
     }
 }
 
@@ -249,6 +330,11 @@ async fn applet_state_json(sync: bool) -> Result<String> {
 }
 
 async fn invoke_action_payload(payload: &str) -> Result<String> {
+    let value: serde_json::Value = serde_json::from_str(payload)?;
+    if value["action"] == "workspace" {
+        workspace::dispatch(value["command"].clone()).await?;
+        return current_applet_state_json("Nested workspace ready");
+    }
     if payload.contains("\"action\":\"debugPlacement\"") {
         log_placement_debug(payload);
         return current_applet_state_json("KWin integration ready");
@@ -284,8 +370,10 @@ async fn install_plasma_integration() -> Result<()> {
     if let Err(err) = install_icon_theme() {
         eprintln!("fanzyzones-kde: skipping icon theme install: {err:#}");
     }
-    install_cli_wrapper()?;
+    let wrapper = install_cli_wrapper()?;
     remove_daemon_service().await;
+    workspace::install_service(&wrapper).await?;
+    workspace::install_effect().await?;
     install_plasmoid_package().await?;
     install_system_tray_item().await?;
     Ok(())
@@ -301,6 +389,13 @@ fn install_cli_wrapper() -> Result<PathBuf> {
     let wrapper = wrapper_dir.join("fanzyzones-kde");
     let exe = env::current_exe().context("resolve current fanzyzones-kde executable")?;
     let mut script = String::from("#!/bin/sh\n");
+    // current_exe() resolves the inner executable of a Nix wrapper. Keep its
+    // declared CLI dependencies available to Plasma and D-Bus activation too.
+    if let Some(runtime_path) = env::var_os("FANZYZONES_KDE_RUNTIME_PATH") {
+        script.push_str("export PATH=");
+        script.push_str(&shell_quote(&runtime_path.to_string_lossy()));
+        script.push_str(":\"$PATH\"\n");
+    }
     for (key, value) in activation_environment()? {
         script.push_str("export ");
         script.push_str(key);
@@ -325,7 +420,11 @@ fn install_cli_wrapper() -> Result<PathBuf> {
 /// its unit, DBus activation file, and wrapper.
 async fn remove_daemon_service() {
     let _ = run_process("systemctl", &["--user", "stop", "fanzyzones-kde.service"]).await;
-    let _ = run_process("systemctl", &["--user", "disable", "fanzyzones-kde.service"]).await;
+    let _ = run_process(
+        "systemctl",
+        &["--user", "disable", "fanzyzones-kde.service"],
+    )
+    .await;
     if let Ok(data_home) = xdg_data_home() {
         let _ = fs::remove_file(
             data_home
@@ -371,6 +470,9 @@ fn activation_environment() -> Result<Vec<(&'static str, PathBuf)>> {
     if let Ok(path) = plasmoid_package_path() {
         values.push(("FANZYZONES_KDE_PLASMOID_DIR", path));
     }
+    if let Ok(path) = workspace::effect_dir() {
+        values.push(("FANZYZONES_KDE_EFFECT_DIR", path));
+    }
     Ok(values)
 }
 
@@ -385,6 +487,14 @@ async fn install_plasmoid_package() -> Result<()> {
     if upgrade.is_ok() {
         return Ok(());
     }
+
+    // KPackage refuses same-version upgrades. Replacing only the installed
+    // package preserves the user's Plasma widget configuration.
+    let _ = run_process(
+        "kpackagetool6",
+        &["--type", "Plasma/Applet", "--remove", FANZY_PLASMOID_ID],
+    )
+    .await;
 
     let install = run_process(
         "kpackagetool6",
@@ -649,16 +759,29 @@ pub(crate) enum VisualMenuAction {
     },
     /// Persist a layout change that the KWin script already applied at runtime
     /// (e.g. a keyboard switch), without restarting the script.
-    SyncActiveLayout { layout: usize },
+    SyncActiveLayout {
+        layout: usize,
+    },
     /// Merge a partial settings object (changed fields only) from the config
     /// dialog, preserving layouts/active_layout/MRU.
-    UpdateSettings { patch: serde_json::Value },
-    Snap { layout: usize, zone: usize },
-    SetSnapMode { mode: SnapMode },
+    UpdateSettings {
+        patch: serde_json::Value,
+    },
+    Snap {
+        layout: usize,
+        zone: usize,
+    },
+    SetSnapMode {
+        mode: SnapMode,
+    },
     /// Persist a layout produced by the in-plasmoid editor: build it, upsert by
     /// id (or append), make it active, and resync KWin.
-    SaveLayout { result: serde_json::Value },
-    DeleteLayout { layout: usize },
+    SaveLayout {
+        result: serde_json::Value,
+    },
+    DeleteLayout {
+        layout: usize,
+    },
     OpenSettings,
     RevealConfig,
     PreviousZone,
@@ -805,6 +928,7 @@ pub(crate) async fn handle_visual_menu_action(
 }
 
 async fn reload_runtime_settings_or_kwin(controller: &KwinController) -> Result<()> {
+    workspace::refresh_effect().await?;
     if controller.reload_runtime_settings().await.is_err() {
         controller.reload_kwin().await?;
     }

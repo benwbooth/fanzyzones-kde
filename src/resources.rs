@@ -9,6 +9,7 @@ use include_dir::{include_dir, Dir};
 use std::path::PathBuf;
 
 static KWIN_SCRIPT: Dir = include_dir!("$CARGO_MANIFEST_DIR/kwin-script");
+static KWIN_EFFECT: Dir = include_dir!("$CARGO_MANIFEST_DIR/kwin-effect");
 static PLASMOID: Dir = include_dir!("$CARGO_MANIFEST_DIR/plasma-applet");
 static ICONS: Dir = include_dir!("$CARGO_MANIFEST_DIR/resources/icons");
 
@@ -38,6 +39,7 @@ pub fn extract_all() -> Result<()> {
     let root = resource_root();
     for (dir, name) in [
         (&KWIN_SCRIPT, "kwin-script"),
+        (&KWIN_EFFECT, "kwin-effect"),
         (&PLASMOID, "plasma-applet"),
         (&ICONS, "icons"),
     ] {
@@ -47,8 +49,7 @@ pub fn extract_all() -> Result<()> {
             std::fs::remove_dir_all(&target)
                 .with_context(|| format!("clear {}", target.display()))?;
         }
-        std::fs::create_dir_all(&target)
-            .with_context(|| format!("create {}", target.display()))?;
+        std::fs::create_dir_all(&target).with_context(|| format!("create {}", target.display()))?;
         dir.extract(&target)
             .with_context(|| format!("extract embedded resources to {}", target.display()))?;
     }

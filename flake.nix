@@ -39,26 +39,35 @@
           kdePackages.kpackage
           kdePackages.kconfig
           kdePackages.qttools
+          kdePackages.dolphin
           systemd
           xdg-utils
         ];
 
+        nativeInput = pkgs.callPackage ./native {};
+
         installResources = ''
           mkdir -p $out/share/fanzyzones-kde
           cp -R kwin-script $out/share/fanzyzones-kde/kwin-script
+          cp -R kwin-effect $out/share/fanzyzones-kde/kwin-effect
+          cp -R ${nativeInput}/share/fanzyzones-kde/native \
+            $out/share/fanzyzones-kde/kwin-effect/contents/ui/native
           mkdir -p $out/share/plasma/plasmoids
           cp -R plasma-applet $out/share/plasma/plasmoids/com.benwbooth.fanzyzones
           mkdir -p $out/share/icons
           cp -R resources/icons/hicolor $out/share/icons/
           wrapProgram $out/bin/fanzyzones-kde \
             --prefix PATH : ${pkgs.lib.makeBinPath runtimeDeps} \
+            --set FANZYZONES_KDE_RUNTIME_PATH ${pkgs.lib.makeBinPath runtimeDeps} \
             --set FANZYZONES_KDE_KWIN_SCRIPT_DIR "$out/share/fanzyzones-kde/kwin-script" \
+            --set FANZYZONES_KDE_EFFECT_DIR "$out/share/fanzyzones-kde/kwin-effect" \
             --set FANZYZONES_KDE_PLASMOID_DIR "$out/share/plasma/plasmoids/com.benwbooth.fanzyzones" \
             --set FANZYZONES_KDE_ICON_THEME_DIR "$out/share/icons" \
             --set FANZYZONES_KDE_TRAY_ICON_SOURCE "$out/share/icons/hicolor/scalable/status/fanzyzones-kde.svg"
         '';
       in
       {
+        packages.native-input = nativeInput;
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "fanzyzones-kde";
           # Single source of truth: read the version straight from Cargo.toml so
@@ -69,6 +78,10 @@
           cargoLock.lockFile = ./Cargo.lock;
 
           nativeBuildInputs = [ pkgs.makeWrapper ];
+          nativeCheckInputs = [ pkgs.nodejs ];
+          postCheck = ''
+            node --test tests/workspace.test.mjs
+          '';
 
           postInstall = installResources;
 
@@ -87,7 +100,7 @@
             )
           );
 
-          packages = [ rustToolchain pkgs.pkg-config ] ++ runtimeDeps ++ (with pkgs; [
+          packages = [ rustToolchain pkgs.pkg-config pkgs.nodejs pkgs.kdePackages.qtdeclarative pkgs.wayland pkgs.wayland-scanner ] ++ runtimeDeps ++ (with pkgs; [
             cargo-watch
             clippy
             rust-analyzer
@@ -95,6 +108,7 @@
           ]);
 
           RUST_SRC_PATH = "${rustToolchain}/lib/rustlib/src/rust/library";
+          FAKE_INPUT_XML = "${pkgs.kdePackages.plasma-wayland-protocols}/share/plasma-wayland-protocols/fake-input.xml";
 
           # Static musl release build: cargo build --release --target x86_64-unknown-linux-musl
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER = muslCc;
@@ -104,6 +118,7 @@
             echo "FanzyZones KDE development environment"
             echo "Run 'cargo test' or 'cargo run -- install --reload'"
             export FANZYZONES_KDE_KWIN_SCRIPT_DIR="$PWD/kwin-script"
+            export FANZYZONES_KDE_EFFECT_DIR="$PWD/kwin-effect"
             export FANZYZONES_KDE_PLASMOID_DIR="$PWD/plasma-applet"
             export FANZYZONES_KDE_ICON_THEME_DIR="$PWD/resources/icons"
             export FANZYZONES_KDE_TRAY_ICON_SOURCE="$PWD/resources/icons/hicolor/scalable/status/fanzyzones-kde.svg"

@@ -50,16 +50,81 @@ pub fn shortcut_defs() -> Vec<ShortcutDef> {
         });
     }
     let fixed: &[(&str, &str, i32)] = &[
-        ("next-zone", "Snap window to next zone", CTRL | ALT | KEY_RIGHT),
-        ("previous-zone", "Snap window to previous zone", CTRL | ALT | KEY_LEFT),
+        (
+            "next-zone",
+            "Snap window to next zone",
+            CTRL | ALT | KEY_RIGHT,
+        ),
+        (
+            "previous-zone",
+            "Snap window to previous zone",
+            CTRL | ALT | KEY_LEFT,
+        ),
         ("next-layout", "Next layout", META | SHIFT | KEY_PGDOWN),
-        ("previous-layout", "Previous layout", META | SHIFT | KEY_PGUP),
-        ("snap-focused", "Snap focused window", META | SHIFT | KEY_SPACE),
+        (
+            "previous-layout",
+            "Previous layout",
+            META | SHIFT | KEY_PGUP,
+        ),
+        (
+            "snap-focused",
+            "Snap focused window",
+            META | SHIFT | KEY_SPACE,
+        ),
         ("snap-all", "Snap all windows", META | KEY_SPACE),
         ("toggle-overlay", "Toggle zone overlay", CTRL | ALT | KEY_C),
     ];
     for (id, friendly, default_key) in fixed {
-        list.push(ShortcutDef { id, friendly: (*friendly).to_string(), default_key: *default_key });
+        list.push(ShortcutDef {
+            id,
+            friendly: (*friendly).to_string(),
+            default_key: *default_key,
+        });
+    }
+    for (id, label, key) in [
+        ("show-all", "Show everything", "Ctrl+Alt+Space"),
+        ("zoom-out", "Step out a level", "Ctrl+Alt+Up"),
+        ("zoom-in", "Step in toward the pointer", "Ctrl+Alt+Down"),
+        ("focus", "Focus window", "Ctrl+Alt+Return"),
+        ("up", "Space above", "Ctrl+Alt+Shift+Up"),
+        ("down", "Space below", "Ctrl+Alt+Shift+Down"),
+        ("back", "Previous view", "Ctrl+Alt+["),
+        ("forward", "Next view", "Ctrl+Alt+]"),
+        ("desktop", "Toggle Desktop", "Ctrl+Alt+D"),
+        ("new-window", "Split with a file manager", "Ctrl+Alt+N"),
+        ("float", "Toggle floating", "Ctrl+Alt+F"),
+        ("frame", "Frame a rectangle", "Meta+Shift+R"),
+        ("next-tab", "Next workspace tab", "Ctrl+Alt+Tab"),
+        (
+            "previous-tab",
+            "Previous workspace tab",
+            "Ctrl+Alt+Shift+Tab",
+        ),
+        ("undo", "Undo workspace change", "Ctrl+Alt+Z"),
+        ("redo", "Redo workspace change", "Ctrl+Alt+Shift+Z"),
+        (
+            "disable",
+            "Restore windows and disable nested workspaces",
+            "Meta+Ctrl+Shift+F12",
+        ),
+    ] {
+        list.push(ShortcutDef {
+            id: leak(format!("workspace-{id}")),
+            friendly: format!("Workspace {label}"),
+            default_key: string_to_keycode(key).expect("valid workspace shortcut"),
+        });
+    }
+    for n in 1..=9 {
+        for (id, label, modifiers) in [
+            ("save", "Save", CTRL | ALT | SHIFT),
+            ("load", "Go to", CTRL | ALT),
+        ] {
+            list.push(ShortcutDef {
+                id: leak(format!("workspace-{id}-view-{n}")),
+                friendly: format!("Workspace {label} view {n}"),
+                default_key: modifiers | (KEY_1 + n - 1),
+            });
+        }
     }
     list
 }
@@ -69,7 +134,9 @@ pub fn shortcut_defs() -> Vec<ShortcutDef> {
 /// defaults even when KGlobalAccel cached a stale empty state for the action.
 /// Existing user bindings (non-empty) are left untouched.
 pub async fn apply_default_bindings() -> Result<()> {
-    let connection = zbus::Connection::session().await.context("connect to session bus")?;
+    let connection = zbus::Connection::session()
+        .await
+        .context("connect to session bus")?;
     let current = read_shortcuts_conn(&connection).await.unwrap_or_default();
     for def in shortcut_defs() {
         let bound = current
@@ -78,7 +145,12 @@ pub async fn apply_default_bindings() -> Result<()> {
             .map(|(_, _, seq)| !seq.is_empty())
             .unwrap_or(false);
         if !bound {
-            let _ = set_foreign_conn(&connection, &def.friendly, &keycode_to_string(def.default_key)).await;
+            let _ = set_foreign_conn(
+                &connection,
+                &def.friendly,
+                &keycode_to_string(def.default_key),
+            )
+            .await;
         }
     }
     Ok(())
@@ -96,6 +168,10 @@ fn key_name(key: i32) -> Option<String> {
     Some(match key {
         0x30..=0x39 | 0x41..=0x5a => ((key as u8) as char).to_string(),
         KEY_SPACE => "Space".into(),
+        0x5b => "[".into(),
+        0x5d => "]".into(),
+        0x0100_0001 => "Tab".into(),
+        0x0100_0004 => "Return".into(),
         KEY_LEFT => "Left".into(),
         KEY_RIGHT => "Right".into(),
         KEY_UP => "Up".into(),
@@ -113,10 +189,18 @@ pub fn keycode_to_string(key: i32) -> String {
         return String::new();
     }
     let mut parts = Vec::new();
-    if key & META != 0 { parts.push("Meta".to_string()); }
-    if key & CTRL != 0 { parts.push("Ctrl".to_string()); }
-    if key & ALT != 0 { parts.push("Alt".to_string()); }
-    if key & SHIFT != 0 { parts.push("Shift".to_string()); }
+    if key & META != 0 {
+        parts.push("Meta".to_string());
+    }
+    if key & CTRL != 0 {
+        parts.push("Ctrl".to_string());
+    }
+    if key & ALT != 0 {
+        parts.push("Alt".to_string());
+    }
+    if key & SHIFT != 0 {
+        parts.push("Shift".to_string());
+    }
     match key_name(key & 0x01FF_FFFF) {
         Some(name) => parts.push(name),
         None => return String::new(),
@@ -139,6 +223,10 @@ pub fn string_to_keycode(sequence: &str) -> Option<i32> {
             "alt" => mods |= ALT,
             "shift" => mods |= SHIFT,
             "space" => base = Some(KEY_SPACE),
+            "tab" => base = Some(0x0100_0001),
+            "return" | "enter" => base = Some(0x0100_0004),
+            "[" => base = Some(0x5b),
+            "]" => base = Some(0x5d),
             "left" => base = Some(KEY_LEFT),
             "right" => base = Some(KEY_RIGHT),
             "up" => base = Some(KEY_UP),
@@ -164,9 +252,20 @@ pub fn string_to_keycode(sequence: &str) -> Option<i32> {
     base.map(|key| key | mods)
 }
 
-type ShortcutInfo = (String, String, String, String, String, String, Vec<i32>, Vec<i32>);
+type ShortcutInfo = (
+    String,
+    String,
+    String,
+    String,
+    String,
+    String,
+    Vec<i32>,
+    Vec<i32>,
+);
 
-async fn read_shortcuts_conn(connection: &zbus::Connection) -> Result<Vec<(String, String, String)>> {
+async fn read_shortcuts_conn(
+    connection: &zbus::Connection,
+) -> Result<Vec<(String, String, String)>> {
     let reply = connection
         .call_method(
             Some(KGA_SERVICE),
@@ -187,12 +286,20 @@ async fn read_shortcuts_conn(connection: &zbus::Connection) -> Result<Vec<(Strin
             .find(|info| info.0 == name)
             .and_then(|info| info.6.first().copied())
             .unwrap_or(0);
-        out.push((def.id.to_string(), def.friendly.clone(), keycode_to_string(key)));
+        out.push((
+            def.id.to_string(),
+            def.friendly.clone(),
+            keycode_to_string(key),
+        ));
     }
     Ok(out)
 }
 
-async fn set_foreign_conn(connection: &zbus::Connection, friendly: &str, sequence: &str) -> Result<()> {
+async fn set_foreign_conn(
+    connection: &zbus::Connection,
+    friendly: &str,
+    sequence: &str,
+) -> Result<()> {
     let name = action_name(friendly);
     let action_id = vec![
         KWIN_COMPONENT.to_string(),
@@ -217,7 +324,9 @@ async fn set_foreign_conn(connection: &zbus::Connection, friendly: &str, sequenc
 /// Read the current bindings for all FanzyZones shortcuts as
 /// (id, friendly, sequence-string).
 pub async fn read_shortcuts() -> Result<Vec<(String, String, String)>> {
-    let connection = zbus::Connection::session().await.context("connect to session bus")?;
+    let connection = zbus::Connection::session()
+        .await
+        .context("connect to session bus")?;
     read_shortcuts_conn(&connection).await
 }
 
@@ -229,6 +338,8 @@ pub async fn set_foreign_shortcut(id: &str, sequence: &str) -> Result<()> {
         .find(|d| d.id == id)
         .map(|d| d.friendly)
         .with_context(|| format!("unknown shortcut id {id}"))?;
-    let connection = zbus::Connection::session().await.context("connect to session bus")?;
+    let connection = zbus::Connection::session()
+        .await
+        .context("connect to session bus")?;
     set_foreign_conn(&connection, &friendly, sequence).await
 }

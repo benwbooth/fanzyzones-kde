@@ -9,7 +9,7 @@ import org.kde.plasma.plasma5support as P5Support
 KCM.SimpleKCM {
     id: page
 
-    readonly property string cli: "$HOME/.local/share/fanzyzones-kde/fanzyzones-kde"
+    readonly property string cli: "\"${XDG_DATA_HOME:-$HOME/.local/share}/fanzyzones-kde/fanzyzones-kde\""
 
     // [{ id, friendly, sequence }]
     property var shortcuts: []

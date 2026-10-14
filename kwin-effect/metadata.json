@@ -1,0 +1,16 @@
+{
+  "KPackageStructure": "KWin/Effect",
+  "KPlugin": {
+    "Id": "fanzyzones_workspace",
+    "Name": "FanzyZones Nested Workspace",
+    "Description": "Nested window spaces, cross-application tabs, and a zoomable workspace",
+    "Authors": [{ "Name": "Ben Booth" }],
+    "Category": "Window Management",
+    "Icon": "fanzyzones-kde",
+    "License": "MIT",
+    "Version": "0.3.0",
+    "EnabledByDefault": false
+  },
+  "X-KDE-Ordering": 65,
+  "X-Plasma-API": "declarativescript"
+}
