@@ -42,6 +42,16 @@ test('cross-app tabs select, tear off, and move as a group', () => {
     assert.equal(E.location(s, 'w0').node.kind, 'window');
     E.validate(s);
 });
+test('docking a floating window outside the Desktop camera reveals its arrival', () => {
+    const [s, k] = fixture();
+    dock(s, k, 'w0', s.scopes[k].root.id);
+    E.navigate(s, k, { node: E.desktopNode(s.scopes[k]).id });
+    dock(s, k, 'w1', s.scopes[k].root.id, 'right');
+    assert.equal(s.scopes[k].camera.node, s.scopes[k].root.id);
+    E.navigate(s, k, { window: 'w2' });
+    dock(s, k, 'w2', s.scopes[k].root.id, 'bottom');
+    assert.equal(s.scopes[k].camera.node, s.scopes[k].root.id);
+});
 test('minimize reflows without losing the original split or weight', () => {
     const [s, k] = fixture(2);
     dock(s, k, 'w0', s.scopes[k].root.id);
@@ -114,6 +124,38 @@ test('display and virtual-desktop cameras are independent', () => {
     dock(s, other, 'w0', s.scopes[other].root.id);
     assert.equal(s.windows.w0.output, 'HDMI-1');
     assert.equal(E.location(s, 'w0').scope, other);
+});
+test('pinch camera follows arbitrary scale continuously and preserves its pointer anchor', () => {
+    const origin = E.rect(.2, .1, .4, .8), anchor = { x: .3, y: .7 };
+    const first = E.zoomCamera(origin, anchor, 1.25), next = E.zoomCamera(origin, anchor, 1.3);
+    assert.ok(next.width < first.width && next.height < first.height);
+    for (const value of [first, next, E.zoomCamera(origin, anchor, .5)]) {
+        assert.ok(Math.abs((anchor.x - value.x) / value.width - .25) < 1e-10);
+        assert.ok(Math.abs((anchor.y - value.y) / value.height - .75) < 1e-10);
+    }
+    const reversed = E.zoomCamera(origin, anchor, 1);
+    for (const key of ['x', 'y', 'width', 'height']) assert.ok(Math.abs(reversed[key] - origin[key]) < 1e-10);
+    assert.deepEqual(plain(E.zoomCamera(origin, anchor, NaN)), plain(origin));
+});
+test('pinch settling can cross several nested levels in a single gesture', () => {
+    const [s, k] = fixture();
+    dock(s, k, 'w0', s.scopes[k].root.id);
+    dock(s, k, 'w1', E.location(s, 'w0').node.id, 'bottom');
+    dock(s, k, 'w2', E.location(s, 'w0').node.id, 'right');
+    const leaf = E.location(s, 'w0').node.id, box = E.layout(s, k).nodes[leaf];
+    const anchor = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    assert.equal(E.fitCamera(s, k, box, anchor, { node: s.scopes[k].root.id }).node, leaf);
+    const overview = E.zoomCamera(box, anchor, .1);
+    assert.equal(E.fitCamera(s, k, overview, anchor, { node: leaf }).node, s.scopes[k].root.id);
+});
+test('pinch settling treats a tab group as one space and can focus floating windows', () => {
+    const [s, k] = fixture();
+    dock(s, k, 'w0', s.scopes[k].root.id);
+    dock(s, k, 'w1', E.location(s, 'w0').node.id, 'center');
+    const group = E.location(s, 'w0').group.id, box = E.layout(s, k).nodes[group];
+    assert.equal(E.fitCamera(s, k, box, { x: .25, y: .5 }).node, group);
+    const floating = E.cameraRect(s, k, null, { window: 'w2' });
+    assert.equal(E.fitCamera(s, k, floating, { x: floating.x + .01, y: floating.y + .01 }).window, 'w2');
 });
 test('restart reconnects surviving identities and unique reopened windows', () => {
     const [s, k] = fixture(2);

@@ -10,6 +10,7 @@ Window {
     minimumWidth: 160
     minimumHeight: 100
     title: "Workspace fixture " + label
+    flags: label === "Frameless" ? Qt.Window | Qt.FramelessWindowHint : Qt.Window
     color: label === "Alpha" ? "#315b78" : label === "Beta" ? "#78513a" : "#4e6850"
     Shortcut { sequence: "Ctrl+M"; onActivated: modal.visible = true }
     Window {

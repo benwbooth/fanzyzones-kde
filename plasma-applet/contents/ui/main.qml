@@ -111,6 +111,7 @@ PlasmoidItem {
             executable.disconnectSource(source);
             if (data["exit code"] !== 0 && data["exit code"] !== undefined) {
                 main.integrationStatus = (data["stderr"] || "FanzyZones command failed").trim();
+                if (cb) cb("", main.integrationStatus);
                 return;
             }
             if (cb) cb((data["stdout"] || "").trim());
@@ -136,6 +137,56 @@ PlasmoidItem {
             } catch (error) {
                 integrationStatus = "Error: " + error;
             }
+        });
+    }
+
+    WorkspaceSetup {
+        id: workspaceSetup
+        onCompleted: (arrange, iconOnly) => {
+            const patch = { nested_icon_only: iconOnly };
+            main.runCli("invoke-action " + main.shellQuote(JSON.stringify({ action: "updateSettings", patch: patch })), function(out, error) {
+                if (error) { workspaceSetup.busy = false; workspaceSetup.errorText = error; return; }
+                main.runCli("workspace enable", function(out, error) {
+                    if (error) { workspaceSetup.busy = false; workspaceSetup.errorText = error; return; }
+                    const outputs = arrange ? main.enumerateDisplays() : [""];
+                    if (!outputs.length) outputs.push("");
+                    function finish() {
+                        main.runCli("invoke-action " + main.shellQuote(JSON.stringify({ action: "updateSettings", patch: { nested_setup_complete: true } })), function(out, error) {
+                            workspaceSetup.busy = false;
+                            if (error) { workspaceSetup.errorText = error; return; }
+                            workspaceSetup.close(); main.refreshState();
+                        });
+                    }
+                    function arrangeOutput(index) {
+                        if (index === outputs.length) { finish(); return; }
+                        main.runCli("workspace " + (arrange ? "arrange" : "float-all")
+                            + (outputs[index] ? " --display " + main.shellQuote(outputs[index]) : ""), function(out, error) {
+                            if (error) { workspaceSetup.busy = false; workspaceSetup.errorText = error; return; }
+                            arrangeOutput(index + 1);
+                        });
+                    }
+                    arrangeOutput(0);
+                });
+            });
+        }
+    }
+    function openSetup() {
+        closeMenu(); workspaceSetup.iconOnly = settings.nested_icon_only !== false; workspaceSetup.open();
+    }
+    WorkspaceSupport { id: workspaceSupport }
+    function openSupport(report) {
+        closeMenu(); workspaceSupport.open(report);
+        runCli(report ? "diagnostics" : "check-updates", function(out, error) {
+            workspaceSupport.busy = false;
+            if (error) { workspaceSupport.message = error; return; }
+            try {
+                const result = JSON.parse(out);
+                workspaceSupport.link = result.url;
+                if (report) { workspaceSupport.draft = result.draft; workspaceSupport.message = "Describe the problem in the draft below."; }
+                else workspaceSupport.message = result.updateAvailable
+                    ? "Version " + result.latest + " is available. You have " + result.current + ". Use your package manager or the release instructions to update."
+                    : "You have " + result.current + ". The latest stable release is " + result.latest + ". No newer release is available.";
+            } catch (e) { workspaceSupport.message = "Could not read the response: " + e; }
         });
     }
 
@@ -475,7 +526,11 @@ PlasmoidItem {
                     MenuAction {
                         width: parent.width
                         text: main.settings.nested_enabled ? "●  Nested workspace" : "Enable nested workspace"
-                        onClicked: main.workspaceCommand(main.settings.nested_enabled ? "disable" : "enable")
+                        onClicked: {
+                            if (!main.settings.nested_enabled && !main.settings.nested_setup_complete) {
+                                main.openSetup();
+                            } else main.workspaceCommand(main.settings.nested_enabled ? "disable" : "enable");
+                        }
                     }
 
                     Column {
@@ -603,13 +658,18 @@ PlasmoidItem {
                     }
                     MenuAction {
                         width: parent.width
-                        text: "Releases…"
-                        onClicked: { main.closeMenu(); Qt.openUrlExternally("https://github.com/benwbooth/fanzyzones-kde/releases"); }
+                        text: "Workspace setup…"
+                        onClicked: main.openSetup()
+                    }
+                    MenuAction {
+                        width: parent.width
+                        text: "Check for updates…"
+                        onClicked: main.openSupport(false)
                     }
                     MenuAction {
                         width: parent.width
                         text: "Report a problem…"
-                        onClicked: { main.closeMenu(); Qt.openUrlExternally("https://github.com/benwbooth/fanzyzones-kde/issues/new"); }
+                        onClicked: main.openSupport(true)
                     }
                 }
             }

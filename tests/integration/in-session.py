@@ -20,4 +20,7 @@ env.update(
 )
 if (root / 'runtime').exists():
     env['XDG_RUNTIME_DIR'] = str(root / 'runtime')
+env.pop('DISPLAY', None)
+if (root / 'x11-display').is_file():
+    env['DISPLAY'] = (root / 'x11-display').read_text()
 os.execvpe(sys.argv[2], sys.argv[2:], env)

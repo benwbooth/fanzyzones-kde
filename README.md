@@ -15,7 +15,8 @@ platform requirements.
 
 ## Nested workspace
 
-After installing, choose **Enable nested workspace** from the applet, or run:
+After installing, choose **Enable nested workspace** from the applet and follow
+the setup wizard, or run:
 
 ```sh
 fanzyzones-kde workspace enable
@@ -32,6 +33,11 @@ fanzyzones-kde workspace arrange
 - With the matching native input module, hold Alt and pinch with two fingers,
   pinch on bare Desktop, or hold Meta+Shift and drag a rectangle. Three-finger
   pinch and the `Meta+Shift+R` framing shortcut also work without that module.
+- Pinch continuously through nested spaces; release to settle on the best-fitting
+  view. Double-click a native title bar to focus, or click its maximize button to
+  dock/float (Alt-click keeps native maximize).
+- Reopen setup, check for updates, or prepare an editable problem-report draft
+  from the applet menu.
 - Disable the workspace to restore normal window positions and decorations:
   `fanzyzones-kde workspace disable`. The emergency shortcut is
   `Meta+Ctrl+Shift+F12`.

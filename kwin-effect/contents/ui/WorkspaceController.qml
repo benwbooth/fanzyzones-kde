@@ -33,12 +33,14 @@ Item {
     property var seamDrag: null
     property var pendingLaunch: null
     property var cameraBeforeGesture: null
+    property var gestureOrigin: null
+    property point gestureAnchor
     property string gestureScope: ""
-    property var gestureTo: null
     property var oldViews: []
     property real transition: 1
     property bool gestureActive: false
     property var nativeBridge: null
+    property var nativeMaximized: ({})
     property bool nativeFraming: false
     property point nativeFrameStart
     property rect nativeFrameRect
@@ -110,6 +112,7 @@ Item {
     }
     function saveNow() {
         if (!ready) return;
+        if (gestureActive) return; // Only a completed camera view is durable.
         try {
             Engine.validate(model);
             request("SaveWorkspace", [JSON.stringify({ version: 1, model: Engine.serializable(model), originals: originals, lastAction: lastAction })]);
@@ -126,7 +129,11 @@ Item {
     function initialize() {
         try {
             nativeBridge = Qt.createQmlObject('import QtQml; import "native" 1.0; InputBridge {}', controller, "native-input");
-            nativeBridge.controller = controller;
+            if (typeof nativeBridge.hasDecoration !== "function") {
+                nativeBridge.destroy();
+                nativeBridge = null;
+                console.info("FanzyZones native input needs rebuilding for this release");
+            } else nativeBridge.controller = controller;
         } catch (error) { console.info("FanzyZones native input unavailable: " + error); }
         readSettings();
         request("LoadWorkspace", [], function(text) {
@@ -153,6 +160,10 @@ Item {
         rebuild(false);
     }
     function stop() {
+        if (gestureActive && model.scopes[gestureScope]) model.scopes[gestureScope].camera = Engine.copy(cameraBeforeGesture);
+        gestureActive = false;
+        cameraBeforeGesture = null;
+        gestureOrigin = null;
         motion.stop();
         settleTimer.stop();
         effect.visible = false;
@@ -163,6 +174,7 @@ Item {
         drag = null;
         dropTarget = null;
         restoreWindows();
+        nativeMaximized = {};
         chrome = [];
         saveNow();
         report();
@@ -212,6 +224,7 @@ Item {
         return { geometry: rectOf(w), output: outputId(screen),
             desktops: (w.desktops || []).map(function(d) { return desktopId(d); }),
             minimized: w.minimized, noBorder: w.noBorder, keepAbove: w.keepAbove,
+            customHeader: nativeBridge && nativeBridge.available ? !nativeBridge.hasDecoration(w) : !!w.noBorder,
             fullScreen: w.fullScreen, maximized: w.maximizeMode || 0 };
     }
     function adopt(w) {
@@ -268,6 +281,7 @@ Item {
             delete connected[id];
             delete expectedMinimized[id];
             delete expectedGeometry[id];
+            delete nativeMaximized[id];
             Engine.removeWindow(model, id, false);
             if (enabled) rebuild(true);
         });
@@ -286,6 +300,16 @@ Item {
         });
         w.fullScreenChanged.connect(function() {
             if (!controller || applying || !enabled) return;
+            if (w.fullScreen && model.windows[id] && !model.windows[id].minimized) {
+                expectedMinimized[id] = false;
+                w.minimized = false;
+            }
+            rebuild(false);
+        });
+        w.maximizedChanged.connect(function() {
+            if (!controller || applying || !enabled) return;
+            if (w.maximizeMode) nativeMaximized[id] = true;
+            else delete nativeMaximized[id];
             rebuild(false);
         });
         w.interactiveMoveResizeStarted.connect(function() {
@@ -329,6 +353,7 @@ Item {
         const view = viewFor(loc.scope);
         if (loc.node.kind === "desktop" && view && view.desktopArea) {
             const a = view.desktopArea, g = rectOf(w);
+            if (needsFloatingHeader(id)) { g.y -= headerHeight; g.height += headerHeight; }
             model.windows[id].floating = Engine.rect((g.x - a.x) / a.width, (g.y - a.y) / a.height, g.width / a.width, g.height / a.height);
         }
         rebuild(false);
@@ -373,6 +398,10 @@ Item {
         // animation resize is not evidence of a minimum size constraint.
         return { width: Math.max(160, size ? size.width : 0), height: Math.max(90, size ? size.height : 0) };
     }
+    function needsFloatingHeader(id) {
+        const saved = originals[id];
+        return !!saved && (saved.customHeader !== undefined ? saved.customHeader : saved.noBorder);
+    }
     function clampBox(box, area) {
         const width = Math.min(Math.max(1, box.width), area.width), height = Math.min(Math.max(1, box.height), area.height);
         return Engine.rect(Math.max(area.x, Math.min(area.x + area.width - width, box.x)),
@@ -408,7 +437,7 @@ Item {
         const view = { key: key, name: screen.name, output: screen, area: area, camera: camera,
             computed: computed, tiles: tiles, chrome: decorations, placements: placements, desktopArea: null };
         const active = Workspace.activeWindow;
-        view.blocked = !!(active && active.fullScreen && outputOf(active) === screen);
+        view.blocked = !!(active && (active.fullScreen || nativeMaximized[windowId(active)]) && outputOf(active) === screen);
         function projected(node) {
             const b = computed.nodes[node.id];
             return b ? Engine.project(b, camera, area) : null;
@@ -464,14 +493,29 @@ Item {
                 const ids = node.windows.filter(function(id) { return Engine.active(model, id); });
                 if (visible.width < 180 || visible.height < 120) { addTile(node, "", "placeholder", box, ids); return; }
                 addTile(node, "", "desktop", box, ids);
-                const a = Engine.rect(visible.x + gap, visible.y + headerHeight + gap,
-                    Math.max(1, visible.width - gap * 2), Math.max(1, visible.height - headerHeight - gap * 2));
+                // Preserve the Desktop's world coordinates while the camera
+                // crops it. Using the clipped box here pins floating windows
+                // to the screen instead of letting them follow a pinch.
+                const a = Engine.rect(box.x + gap, box.y + headerHeight + gap,
+                    Math.max(1, box.width - gap * 2), Math.max(1, box.height - headerHeight - gap * 2));
                 view.desktopArea = a;
                 ids.forEach(function(id) {
                     const f = model.windows[id].floating || Engine.rect(.1, .1, .6, .6);
                     const b = clampBox(Engine.project(f, Engine.unit(), a), a);
                     const minimum = minimumSize(id);
-                    if (b.width >= minimum.width - 2 && b.height >= minimum.height - 2) place(id, b, true);
+                    const clipped = Engine.intersect(b, area);
+                    const ownHeader = needsFloatingHeader(id);
+                    if (clipped.width >= minimum.width - 2 && clipped.height >= minimum.height + (ownHeader ? headerHeight : 0) - 2) {
+                        const content = Engine.copy(clipped);
+                        if (ownHeader) {
+                            decorations.push({ type: "header", kind: "floating", scope: key, node: node.id,
+                                id: id, windows: [id], title: model.windows[id].title, blocked: view.blocked,
+                                rect: Engine.rect(clipped.x, clipped.y, clipped.width, headerHeight) });
+                            content.y += headerHeight;
+                            content.height -= headerHeight;
+                        }
+                        place(id, content, true);
+                    }
                     else addTile({ id: node.id + ":" + id }, id, "placeholder", b, [id]);
                     tiles.push({ scope: key, node: node.id, id: id, kind: "floating", rect: b, clipped: b,
                         windows: [id], title: model.windows[id].title });
@@ -563,7 +607,7 @@ Item {
         const newGeometry = {};
         Object.keys(clients).forEach(function(id) {
             const w = clients[id], info = model.windows[id], loc = Engine.location(model, id);
-            if (!info || !loc || !w || w.fullScreen) return;
+            if (!info || !loc || !w || w.fullScreen || nativeMaximized[id]) return;
             const placement = placements[id];
             if (!activeScopes[loc.scope] && !placement) return;
             const hidden = !placement || info.minimized;
@@ -795,6 +839,10 @@ Item {
             let box = rectOf(w);
             if (moving.manual) box = Engine.rect(Workspace.cursorPos.x - Math.min(box.width / 2, 180),
                 Workspace.cursorPos.y - 15, Math.min(box.width, a.width * .8), Math.min(box.height, a.height * .8));
+            if (needsFloatingHeader(id)) {
+                if (!moving.manual) box.y -= headerHeight;
+                box.height += headerHeight;
+            }
             Engine.floatWindow(model, id, key, Engine.rect((box.x - a.x) / a.width, (box.y - a.y) / a.height,
                 box.width / a.width, box.height / a.height));
         }
@@ -810,6 +858,21 @@ Item {
         Engine.navigate(model, key, { rect: Engine.rect(c.x + (r.x - a.x) / a.width * c.width,
             c.y + (r.y - a.y) / a.height * c.height, r.width / a.width * c.width, r.height / a.height * c.height) });
         rebuild(true);
+    }
+    function nativeWindowManaged(id) {
+        return enabled && !!clients[id] && !!Engine.location(model, id);
+    }
+    function nativeWindowAction(id, action) {
+        if (!nativeWindowManaged(id)) return;
+        if (nativeMaximized[id] && (action === "focus" || action === "toggle-float")) clients[id].setMaximize(false, false);
+        execute({ action: action, window: id, display: outputOf(clients[id]).name });
+    }
+    function maximizeNative(id) {
+        const w = clients[id];
+        if (!w) return;
+        const maximize = !w.maximizeMode;
+        if (maximize) w.noBorder = originals[id] ? originals[id].noBorder : false;
+        w.setMaximize(maximize, maximize);
     }
     function nativeDesktopAt() {
         if (!enabled || animating || effect.visible) return false;
@@ -848,62 +911,61 @@ Item {
         if (!animating) effect.visible = false;
     }
     function cancelGesture() {
-        if (!gestureActive) return;
-        transition = 0;
-        endGesture(false);
+        finishPinch(true);
     }
-    function gesture(direction, progress) {
+    function beginPinch() {
         if (!enabled || !ready) return;
-        if (!gestureActive) {
-            const key = activeKey(), scope = model.scopes[key];
-            if (!scope) return;
-            gestureScope = key;
-            cameraBeforeGesture = Engine.copy(scope.camera);
-            oldViews = views;
-            if (direction === "out") {
-                const parent = scope.camera.node ? Engine.parentOf(scope, scope.camera.node) : null;
-                gestureTo = { node: parent ? parent.id : scope.root.id };
-            } else {
-                const view = viewFor(key), point = Workspace.cursorPos;
-                const node = Engine.hitTest(model, key, view.camera.x + (point.x - view.area.x) / view.area.width * view.camera.width,
-                    view.camera.y + (point.y - view.area.y) / view.area.height * view.camera.height, view.computed);
-                gestureTo = { node: node ? node.id : scope.root.id };
-            }
-            if (JSON.stringify(gestureTo) === JSON.stringify(cameraBeforeGesture)) return;
-            motion.stop(); settleTimer.stop();
-            scope.camera = Engine.copy(gestureTo);
-            calculateViews();
-            animating = true;
-            gestureActive = true;
-            effect.visible = true;
-        }
-        transition = Math.max(0, Math.min(1, progress));
+        if (gestureActive) return;
+        const key = activeKey(), scope = model.scopes[key], view = viewFor(key), p = Workspace.cursorPos;
+        if (!scope || !view) return;
+        motion.stop(); settleTimer.stop();
+        saveTimer.stop();
+        gestureScope = key;
+        cameraBeforeGesture = Engine.copy(scope.camera);
+        gestureOrigin = Engine.copy(view.camera);
+        gestureAnchor = Qt.point(view.camera.x + (p.x - view.area.x) / view.area.width * view.camera.width,
+            view.camera.y + (p.y - view.area.y) / view.area.height * view.camera.height);
+        oldViews = views;
+        transition = 1;
+        animating = true;
+        gestureActive = true;
+        effect.visible = true;
     }
-    function endGesture(triggered) {
+    function updatePinch(scale) {
+        if (!gestureActive) beginPinch();
         if (!gestureActive) return;
-        const scope = model.scopes[gestureScope];
-        const commit = triggered || transition >= .5;
+        model.scopes[gestureScope].camera = { rect: Engine.zoomCamera(gestureOrigin, gestureAnchor, scale) };
+        calculateViews();
+        if (!gestureReport.running) gestureReport.start();
+    }
+    function finishPinch(cancel) {
+        if (!gestureActive) return;
+        const scope = model.scopes[gestureScope], current = viewFor(gestureScope);
+        const target = cancel ? cameraBeforeGesture : Engine.fitCamera(model, gestureScope, current.camera, gestureAnchor, cameraBeforeGesture);
+        // The settling animation starts at the actual free-zoom geometry.
+        oldViews = views;
         scope.camera = Engine.copy(cameraBeforeGesture);
-        if (commit) Engine.navigate(model, gestureScope, gestureTo);
+        if (!cancel) Engine.navigate(model, gestureScope, target);
         gestureActive = false;
         cameraBeforeGesture = null;
-        // Start the settling animation at the actual in-flight camera position.
-        const start = oldViews;
-        oldViews = views.map(function(v) {
-            const before = start.find(function(s) { return s.key === v.key; });
-            if (!before) return v;
-            const interpolated = Object.assign({}, v);
-            interpolated.tiles = v.tiles.map(function(t) {
-                const b = tileStartRect(t, v.key), end = t.rect, p = transition;
-                return Object.assign({}, t, { rect: Engine.rect(b.x + (end.x - b.x) * p, b.y + (end.y - b.y) * p,
-                    b.width + (end.width - b.width) * p, b.height + (end.height - b.height) * p) });
-            });
-            return interpolated;
-        });
+        gestureOrigin = null;
         calculateViews();
+        chooseFocus(gestureScope);
         transition = 0;
         motion.restart();
         persist();
+        report();
+    }
+    // KWin's declarative three-finger handler supplies a normalized progress
+    // rather than a scale. Keep it on the same continuous camera path.
+    function gesture(direction, progress) {
+        updatePinch(Math.exp((direction === "out" ? -1 : 1) * progress * Math.log(4)));
+    }
+    function endGesture(triggered) { finishPinch(false); }
+    Timer {
+        id: gestureReport
+        interval: 100
+        onTriggered: controller.report()
     }
     function processCommand() {
         if (!ready) return;
@@ -1008,6 +1070,12 @@ Item {
                     const edge = payload.edge || (action === "split-vertical" ? "bottom" : "right");
                     if (["left", "right", "top", "bottom", "center"].indexOf(edge) < 0) throw new Error("Invalid docking edge");
                     if (!Engine.dock(model, id, destination, target, edge, !!payload.group)) throw new Error("Cannot dock into that space");
+                    if (action === "toggle-float" || action === "split-horizontal" || action === "split-vertical") {
+                        const nextScope = model.scopes[destination], next = Engine.location(model, id);
+                        const parent = Engine.parentOf(nextScope, next.group.id);
+                        Engine.navigate(model, destination, { node: parent ? parent.id : nextScope.root.id });
+                        focusAfterLayout = id;
+                    }
                 } else if (action === "next-tab" || action === "previous-tab") {
                     if (loc.group.kind === "tabs") {
                         const tabs = loc.group.children.filter(function(n) { return Engine.active(model, n.window); });

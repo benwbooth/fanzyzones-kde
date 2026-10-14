@@ -50,6 +50,8 @@ pub struct Settings {
     /// Optional nested workspace mode; ordinary zone layouts remain available.
     #[serde(default)]
     pub nested_enabled: bool,
+    #[serde(default)]
+    pub nested_setup_complete: bool,
     #[serde(default = "default_workspace_animation")]
     pub nested_animation_ms: u32,
     #[serde(default = "default_workspace_gap")]
@@ -195,6 +197,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             nested_enabled: false,
+            nested_setup_complete: false,
             nested_animation_ms: default_workspace_animation(),
             nested_gap: default_workspace_gap(),
             nested_icon_only: true,

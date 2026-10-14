@@ -42,6 +42,7 @@
           kdePackages.dolphin
           systemd
           xdg-utils
+          curl
         ];
 
         nativeInput = pkgs.callPackage ./native {};
@@ -68,6 +69,8 @@
       in
       {
         packages.native-input = nativeInput;
+        # Explicit opt-in test tool. It is not a dependency of the shipped package.
+        packages.integration-input = pkgs.callPackage ./tests/integration/native-driver {};
         packages.default = pkgs.rustPlatform.buildRustPackage {
           pname = "fanzyzones-kde";
           # Single source of truth: read the version straight from Cargo.toml so

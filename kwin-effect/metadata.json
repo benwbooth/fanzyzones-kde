@@ -8,7 +8,7 @@
     "Category": "Window Management",
     "Icon": "fanzyzones-kde",
     "License": "MIT",
-    "Version": "0.3.0",
+    "Version": "0.3.1",
     "EnabledByDefault": false
   },
   "X-KDE-Ordering": 65,

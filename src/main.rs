@@ -3,6 +3,7 @@ mod kwin;
 mod layout;
 mod resources;
 mod shortcuts;
+mod support;
 mod workspace;
 
 use anyhow::{Context, Result};
@@ -32,6 +33,10 @@ struct Args {
 
 #[derive(Debug, Subcommand)]
 enum CliCommand {
+    /// Check the latest stable release without downloading or installing it.
+    CheckUpdates,
+    /// Prepare a local problem-report draft; no information is transmitted.
+    Diagnostics,
     /// Control the nested, zoomable workspace. Every action also has a fanzyzones:// URL.
     Workspace {
         #[arg(value_enum)]
@@ -145,6 +150,14 @@ fn run_cli(command: CliCommand) -> Result<()> {
 
 async fn run_cli_async(command: CliCommand) -> Result<()> {
     match command {
+        CliCommand::CheckUpdates => {
+            println!("{}", support::check_updates().await?);
+            Ok(())
+        }
+        CliCommand::Diagnostics => {
+            println!("{}", support::diagnostics().await?);
+            Ok(())
+        }
         CliCommand::ServeWorkspace => workspace::serve().await,
         CliCommand::HandleUrl { url } => {
             println!(

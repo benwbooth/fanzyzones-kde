@@ -14,9 +14,10 @@ workspaces are opt-in.
 | Cross-app tabs | Center dwell, tab selection, tear-off, context menu; Shift-drag moves the group |
 | Resize at seams | Adjacent weights change together; unrelated spaces retain their sizes |
 | Small windows and groups | App icon and color placeholders; group split miniatures; double-click to focus |
-| Zoom, focus, framing | Animated live thumbnails, hierarchy, neighbour navigation, camera history and rectangle framing |
-| Trackpad interaction | Alt+two-finger pinch or bare-Desktop pinch with the native module; three-finger fallback |
-| Title and Desktop focus | Double-click a managed title strip or bare Desktop; keyboard focus also handles floating windows |
+| Zoom, focus, framing | Live thumbnails, continuous camera scaling, best-fitting space on release, hierarchy, neighbour navigation, history and rectangle framing |
+| Trackpad interaction | Alt+two-finger pinch or bare-Desktop pinch with the native module, including reversal and cancellation; three-finger fallback |
+| Title and Desktop focus | Double-click a native KWin title bar, managed title strip or bare Desktop; floating-window focus and return |
+| Float / dock button | Native maximize button toggles docking; Alt retains native maximize. Managed strips have the same actions |
 | Nine saved views | Independent slots 1–9 on each display and virtual desktop |
 | Menu-bar controls | Plasma applet navigation and view indicators; optional expanded controls when placed directly in a panel |
 | Minimize and return | Reflow while minimized; original split and weights remain available on restore |
@@ -25,13 +26,28 @@ workspaces are opt-in.
 | Leave apps alone / recover windows | Exclusion list, include again, float-all, disable and emergency recovery shortcut |
 | Every workspace action as a URL | Typed `fanzyzones://` commands, CLI and local D-Bus dispatch |
 | New file-manager split | `Ctrl+Alt+N` launches a new Dolphin window beside the current space |
-| Settings / support | Shortcut editor, gap and animation settings, releases and issue-report links |
+| Guided setup | Introduction, KDE compatibility and shortcut guidance, arrange all displays or keep floating, panel appearance |
+| Settings / support | Shortcut editor, gap and animation settings, integrated stable-release check, editable diagnostic report draft |
 
 KDE adaptations: Meta replaces Command; Dolphin replaces Finder. The custom
 title strip's arrow button and `Ctrl+Alt+F` toggle docking/floating. Native
-application title buttons retain KDE/application behavior. Application-owned
-decorations cannot always be removed. Fullscreen windows are left to KWin.
+KWin maximize buttons also toggle docking; hold Alt for ordinary maximize.
+Apps drawing their own title bars get a workspace strip when floating because
+KWin cannot identify arbitrary client-side buttons; those app-owned buttons
+retain their behavior. Application-owned decorations cannot always be removed.
+Fullscreen and explicit native maximization are left to KWin.
 Attached dialogs follow their managed parent's visibility and display.
+KDE does not need macOS Accessibility or Screen Recording permission prompts.
+All features are available without a trial, license, or per-display window cap.
+
+The first opt-in from the menu opens setup, which can be reopened from
+**Workspace setup…**. **Check for updates…** compares the installed version
+against the latest stable GitHub release; installation stays with the existing
+package manager or release installer. **Report a problem…** prepares an editable
+local draft with version and capability counts. It excludes window titles,
+application names, paths and logs. Opening the GitHub draft is an explicit user
+action; nothing is submitted automatically. The CLI equivalents are
+`fanzyzones-kde check-updates` and `fanzyzones-kde diagnostics`.
 
 ## Native input module
 
@@ -119,22 +135,29 @@ Validated on KWin 6.6.6 / Qt 6.11.2, Wayland, two virtual 1280×800 displays:
   slot restoration.
 - Nine views, focus, history, display independence and cross-display moves.
 - Meta+Shift drag framing, Escape cancellation and global shortcuts.
+- Two-finger events injected through KWin's actual pointer input pipeline:
+  continuous scale, reversal, cancellation, unmodified application pass-through,
+  bare Desktop pinch, best-fit settling and one history entry per gesture.
+- Native KWin title-bar double-click, maximize-button docking, Alt-maximize and
+  restore; floating workspace controls for windows without server decorations.
 - Pointer seam resize, title/Desktop double-click, keyboard input reaching the
   native client, dwell tabs, tab selection, tear-off and group dragging.
 - Modal visibility following tab switches.
 - Real Dolphin split launch, application exclusion and inclusion, fullscreen
   return, and Plasma menu/panel rendering.
+- XWayland docking, mixed Wayland/X11 tabs, focus, minimize/restore and floating.
+- Guided setup completion, live release check and editable diagnostic draft.
 - Display disable/re-enable and 125% fractional scale.
 - Full compositor restart with reopened window identities, saved views and
   display assignments restored.
 - Rust storage/URL/config tests and JavaScript model tests, including 1,200
   deterministic mixed edits that check unique window ownership after each edit.
 
-Physical trackpad gestures require a hands-on check; the virtual input protocol
-does not provide pinch events. XWayland applications, other decoration themes,
-real monitor hotplug and different GPUs are not covered by these virtual-session
-results. The implementation is not a claim that every application or compositor
-configuration has been tested.
+Physical trackpad hardware still needs a hands-on check: the pinch integration
+driver exercises the compositor pipeline, not libinput or a physical device.
+Other decoration themes, real monitor hotplug and different GPUs are not covered
+by these virtual-session results. Coverage is of the implemented interactions,
+not every application or compositor configuration.
 
 ## Running the checks
 
@@ -151,12 +174,20 @@ one terminal (the process remains in the foreground):
 test_root=$(mktemp -d /tmp/fanzyzones-parity.XXXXXX)
 QML_BIN=/path/to/qt6/bin/qml \
 FANZYZONES_NATIVE_DIR=/path/to/built/native/module \
+FANZYZONES_TEST_INPUT_DIR=/path/to/test/module \
+FANZYZONES_TEST_XWAYLAND=1 \
   bash tests/integration/session.sh "$test_root" "$PWD"
 ```
 
 Run `bash tests/integration/build-input.sh` inside `nix develop` to build the
 input driver. Outside Nix, provide Wayland's scanner and development package,
 `pkg-config`, and `FAKE_INPUT_XML` pointing to Plasma's `fake-input.xml`.
+Build the optional pinch/decoration driver with `nix build .#integration-input`
+(using the host's nixpkgs input) or CMake in `tests/integration/native-driver`.
+Its installed directory is `share/fanzyzones-test-input`. The module refuses to
+load outside the private virtual test compositor and is never shipped as part
+of the application. `QML_BIN` should also be available to checks which launch
+additional fixtures.
 
 In another terminal, pass the printed private directory to the checks:
 
@@ -165,6 +196,9 @@ python tests/integration/in-session.py "$test_root" python tests/integration/inp
 python tests/integration/in-session.py "$test_root" python tests/integration/dialog-check.py "$test_root"
 python tests/integration/in-session.py "$test_root" python tests/integration/output-check.py "$test_root"
 python tests/integration/in-session.py "$test_root" python tests/integration/application-check.py "$test_root"
+python tests/integration/in-session.py "$test_root" python tests/integration/gesture-check.py "$test_root"
+python tests/integration/in-session.py "$test_root" python tests/integration/frameless-check.py "$test_root"
+python tests/integration/in-session.py "$test_root" python tests/integration/xwayland-check.py "$test_root"
 ```
 
 `check.py` also tests disabling the effect, and should run last in a fresh
@@ -172,3 +206,6 @@ three-fixture session. For restart coverage, run `restart-check.py "$test_root"
 save` through `in-session.py`, stop that private compositor, restart
 `session.sh` with the same directory, then run `restart-check.py` without `save`.
 `capture.py` captures the private compositor through KWin's screenshot API.
+Pass an output name as its third argument while an animation is active:
+KWin 6.6's combined-area screenshot uses only the first output's fullscreen
+effect view, whereas `CaptureScreen` exercises each display's actual view.

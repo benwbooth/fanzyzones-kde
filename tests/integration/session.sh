@@ -36,6 +36,12 @@ cp -R "$repo_root/kwin-effect" "$XDG_DATA_HOME/kwin/effects/fanzyzones_workspace
 if [ -n "${FANZYZONES_NATIVE_DIR:-}" ]; then
     cp -R --no-preserve=mode "$FANZYZONES_NATIVE_DIR" "$XDG_DATA_HOME/kwin/effects/fanzyzones_workspace/contents/ui/native"
 fi
+if [ -n "${FANZYZONES_TEST_INPUT_DIR:-}" ]; then
+    effect_ui="$XDG_DATA_HOME/kwin/effects/fanzyzones_workspace/contents/ui"
+    cp -R --no-preserve=mode "$FANZYZONES_TEST_INPUT_DIR" "$effect_ui/testinput"
+    sed -i '1i import "testinput" as TestInput' "$effect_ui/main.qml"
+    sed -i '/id: sceneEffect/a\    TestInput.Driver {}' "$effect_ui/main.qml"
+fi
 cp -R "$repo_root/kwin-script" "$XDG_DATA_HOME/kwin/scripts/fanzyzones_kde"
 if [ ! -f "$XDG_CONFIG_HOME/kwinrc" ]; then
     cat > "$XDG_CONFIG_HOME/kwinrc" <<'EOF'
@@ -59,8 +65,17 @@ printf '%s' "$WAYLAND_DISPLAY" > "$test_root/socket"
 "$repo_root/target/debug/fanzyzones-kde" serve-workspace > "$test_root/service.log" 2>&1 &
 service_pid=$!
 trap 'kill "$service_pid" 2>/dev/null || true' EXIT
+kwin_extra=()
+if [ "${FANZYZONES_TEST_XWAYLAND:-}" = 1 ]; then
+    cat > "$test_root/x11-env.sh" <<'EOF'
+#!/bin/sh
+printf '%s' "$DISPLAY" > "$XDG_RUNTIME_DIR/../x11-display"
+EOF
+    chmod +x "$test_root/x11-env.sh"
+    kwin_extra=(--xwayland "$test_root/x11-env.sh")
+fi
 "${KWIN_BIN:-kwin_wayland}" --virtual --width 1280 --height 800 --output-count 2 \
-    --socket "$WAYLAND_DISPLAY" --no-lockscreen --no-kactivities > "$test_root/kwin.log" 2>&1 &
+    --socket "$WAYLAND_DISPLAY" --no-lockscreen --no-kactivities "${kwin_extra[@]}" > "$test_root/kwin.log" 2>&1 &
 kwin_pid=$!
 printf '%s' "$kwin_pid" > "$test_root/kwin-pid"
 trap 'kill "$kwin_pid" "$service_pid" 2>/dev/null || true' EXIT

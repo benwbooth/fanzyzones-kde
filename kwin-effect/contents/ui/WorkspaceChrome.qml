@@ -8,10 +8,14 @@ Window {
     required property var controller
     required property var entry
     property string contextWindowId: ""
+    // KWin otherwise puts every internal QWindow in OverlayLayer, even without
+    // WindowStaysOnTopHint. Its outline marker selects NormalLayer so applet
+    // menus, dialogs, notifications and overlapping floating windows win.
+    readonly property bool __kwin_outline: true
     title: "FanzyZones Workspace"
     // KWin treats Qt.Tool's Popup flag bits as a popup grab. Ordinary internal
     // windows keep chrome interactive without closing it on an outside click.
-    flags: Qt.Window | Qt.BypassWindowManagerHint | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.WindowDoesNotAcceptFocus
+    flags: Qt.Window | Qt.BypassWindowManagerHint | Qt.FramelessWindowHint | Qt.WindowDoesNotAcceptFocus
     color: "transparent"
     visible: controller.chromeVisible && !!entry.rect && !entry.blocked
     x: entry.rect ? Math.round(entry.rect.x) : 0
@@ -156,11 +160,12 @@ Window {
                         hoverEnabled: true
                         Controls.ToolTip.visible: containsMouse
                         Controls.ToolTip.text: modelData === "×" ? "Close window" : modelData === "−" ? "Minimize window" : "Float or dock window"
-                        onClicked: {
+                        onClicked: function(mouse) {
                             const w = controller.clients[entry.id];
                             if (!w) return;
                             if (modelData === "×") w.closeWindow();
                             else if (modelData === "−") w.minimized = true;
+                            else if (mouse.modifiers & Qt.AltModifier) controller.maximizeNative(entry.id);
                             else controller.execute({ action: "toggle-float", window: entry.id });
                         }
                     }

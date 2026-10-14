@@ -23,8 +23,13 @@ async def main():
             return stream.read()
 
     reader = asyncio.get_running_loop().run_in_executor(None, read_all)
+    # KWin 6.6 CaptureWorkspace paints the whole area with the first output's
+    # SceneView. Fullscreen effects therefore require separate CaptureScreen
+    # requests to inspect the other output's real render path.
+    output = sys.argv[3] if len(sys.argv) > 3 else None
     reply = await bus.call(Message(destination='org.kde.KWin', path='/org/kde/KWin/ScreenShot2',
-        interface='org.kde.KWin.ScreenShot2', member='CaptureWorkspace', signature='a{sv}h', body=[{}, 0], unix_fds=[write_fd]))
+        interface='org.kde.KWin.ScreenShot2', member='CaptureScreen' if output else 'CaptureWorkspace',
+        signature='sa{sv}h' if output else 'a{sv}h', body=[output, {}, 0] if output else [{}, 0], unix_fds=[write_fd]))
     os.close(write_fd)
     if reply.message_type == MessageType.ERROR:
         raise RuntimeError(f'{reply.error_name}: {reply.body}')
@@ -39,6 +44,8 @@ async def main():
     else:
         raise RuntimeError(f'Unsupported screenshot format: {metadata}')
     image.convert('RGB').save(destination)
+    if output and not any(high for low, high in image.convert('RGB').getextrema()):
+        raise AssertionError(f'{output} rendered entirely black')
     print(f'{destination}: {width}x{height}')
     bus.disconnect()
 

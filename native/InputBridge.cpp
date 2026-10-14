@@ -3,6 +3,9 @@
 // private compositor API. The QML module is optional on portable Rust builds.
 #include <input.h>
 #include <input_event.h>
+#include <window.h>
+#include <KDecoration3/Decoration>
+#include <KDecoration3/DecorationButton>
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QGuiApplication>
@@ -31,6 +34,11 @@ public:
     QObject *controller() const { return m_controller; }
     void setController(QObject *value) { m_controller = value; }
     bool available() const { return m_available; }
+    Q_INVOKABLE bool hasDecoration(QObject *object) const
+    {
+        auto *window = qobject_cast<KWin::Window *>(object);
+        return window && window->decoration();
+    }
     Q_INVOKABLE QString iconColor(const QVariant &value) const {
         const QImage image = value.value<QIcon>().pixmap(32, 32).toImage();
         if (image.isNull()) return {};
@@ -58,31 +66,38 @@ public:
     }
     void call(const char *method) { if (m_controller) QMetaObject::invokeMethod(m_controller, method); }
     void call(const char *method, QVariant arg) { if (m_controller) QMetaObject::invokeMethod(m_controller, method, Q_ARG(QVariant, arg)); }
+    bool managed(KWin::Window *window) const
+    {
+        QVariant result;
+        if (enabled() && window) QMetaObject::invokeMethod(m_controller, "nativeWindowManaged",
+            Q_RETURN_ARG(QVariant, result), Q_ARG(QVariant, window->internalId().toString()));
+        return result.toBool();
+    }
+    void windowAction(KWin::Window *window, const QString &action)
+    {
+        if (managed(window)) QMetaObject::invokeMethod(m_controller, "nativeWindowAction",
+            Q_ARG(QVariant, window->internalId().toString()), Q_ARG(QVariant, action));
+    }
     bool pinchGestureBegin(KWin::PointerPinchGestureBeginEvent *event) override
     {
         m_pinch = enabled() && event->fingerCount == 2
             && (KWin::input()->keyboardModifiers().testFlag(Qt::AltModifier) || desktop());
-        m_direction.clear();
         m_pinchCancelled = false;
+        if (m_pinch) call("beginPinch");
         return m_pinch;
     }
     bool pinchGestureUpdate(KWin::PointerPinchGestureUpdateEvent *event) override
     {
         if (!m_pinch) return false;
         if (!enabled() || m_pinchCancelled) return true;
-        const double amount = std::log(std::max(0.01, event->scale));
-        if (m_direction.isEmpty() && std::abs(amount) > 0.025) m_direction = amount < 0 ? "out" : "in";
-        if (!m_direction.isEmpty()) {
-            const double progress = std::clamp((m_direction == "out" ? -amount : amount) / 0.5, 0.0, 1.0);
-            QMetaObject::invokeMethod(m_controller, "gesture", Q_ARG(QVariant, QVariant(m_direction)), Q_ARG(QVariant, QVariant(progress)));
-        }
+        call("updatePinch", event->scale);
         return true;
     }
     bool pinchGestureEnd(KWin::PointerPinchGestureEndEvent *) override
     {
         if (!m_pinch) return false;
         m_pinch = false;
-        call("endGesture", false);
+        call("finishPinch", m_pinchCancelled);
         return true;
     }
     bool pinchGestureCancelled(KWin::PointerPinchGestureCancelEvent *) override
@@ -95,6 +110,13 @@ public:
     bool pointerButton(KWin::PointerButtonEvent *event) override
     {
         if (event->button != Qt::LeftButton) return false;
+        if (m_buttonRelease && event->state == KWin::PointerButtonState::Released) {
+            m_buttonRelease = false;
+            if (m_buttonWindow && m_buttonRect.translated(m_buttonWindow->pos()).contains(event->position))
+                windowAction(m_buttonWindow, "toggle-float");
+            m_buttonWindow.clear();
+            return true;
+        }
         if (m_frame && event->state == KWin::PointerButtonState::Released) {
             m_frame = false;
             call("endNativeFrame", true);
@@ -106,13 +128,37 @@ public:
             call("beginNativeFrame");
             return true;
         }
-        if (desktop() && event->modifiers == Qt::NoModifier) {
+        auto *window = KWin::input()->findToplevel(event->position);
+        auto *decoration = window && managed(window) ? window->decoration() : nullptr;
+        bool title = false;
+        if (decoration && event->modifiers == Qt::NoModifier) {
+            const QPointF local = event->position - window->pos();
+            title = decoration->titleBar().contains(local);
+            for (auto *button : decoration->findChildren<KDecoration3::DecorationButton *>()) {
+                if (!button->isVisible() || !button->geometry().contains(local)) continue;
+                title = false;
+                if (button->isEnabled() && button->type() == KDecoration3::DecorationButtonType::Maximize) {
+                    m_buttonWindow = window;
+                    m_buttonRect = button->geometry();
+                    m_buttonRelease = true;
+                    m_click.invalidate();
+                    return true;
+                }
+            }
+        }
+        if ((title || desktop()) && event->modifiers == Qt::NoModifier) {
             const auto hints = QGuiApplication::styleHints();
+            const QString target = title ? window->internalId().toString() : QStringLiteral("desktop");
             if (m_click.isValid() && m_click.elapsed() <= hints->mouseDoubleClickInterval()
+                && target == m_clickTarget
                 && (event->position - m_clickPosition).manhattanLength() < hints->startDragDistance()) {
-                call("desktopDoubleClick");
+                if (title) {
+                    windowAction(window, "focus");
+                } else call("desktopDoubleClick");
+                m_buttonRelease = true;
                 m_click.invalidate();
-            } else { m_click.start(); m_clickPosition = event->position; }
+                return true;
+            } else { m_click.start(); m_clickPosition = event->position; m_clickTarget = target; }
         } else m_click.invalidate();
         return false;
     }
@@ -138,9 +184,12 @@ private:
     bool m_pinch = false;
     bool m_pinchCancelled = false;
     bool m_frame = false;
-    QString m_direction;
+    bool m_buttonRelease = false;
+    QPointer<KWin::Window> m_buttonWindow;
+    QRectF m_buttonRect;
     QElapsedTimer m_click;
     QPointF m_clickPosition;
+    QString m_clickTarget;
 };
 
 class InputPlugin : public QQmlExtensionPlugin

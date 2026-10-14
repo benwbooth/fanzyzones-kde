@@ -258,6 +258,14 @@ function dock(state, id, destination, targetId, edge, wholeGroup) {
     // Docking beside the space being viewed must reveal the new split.
     if (scope.camera.node && targetPath.indexOf(scope.camera.node) >= 0)
         scope.camera = { node: scope.root.id };
+    // A floating window may be docked beside the entire tree while the camera
+    // still points at its Desktop. Reveal the arrival instead of hiding it.
+    var arrived = location(state, id), computed = layout(state, destination);
+    var arrivalBox = arrived && computed.nodes[arrived.group.id];
+    var viewport = cameraRect(state, destination, computed);
+    if (scope.camera.window === id || (arrivalBox
+        && !contains(viewport, arrivalBox.x + arrivalBox.width / 2, arrivalBox.y + arrivalBox.height / 2)))
+        scope.camera = { node: scope.root.id };
     return true;
 }
 function floatWindow(state, id, destination, floatingRect) {
@@ -361,6 +369,35 @@ function cameraRect(state, key, computed, camera) {
         }
     }
     return copy(camera.rect || computed.nodes[camera.node] || unit());
+}
+function zoomCamera(camera, anchor, scale) {
+    if (!Number.isFinite(scale) || scale <= 0) return copy(camera);
+    var width = Math.max(1e-7, Math.min(4, camera.width / scale));
+    var height = Math.max(1e-7, Math.min(4, camera.height / scale));
+    return rect(anchor.x - (anchor.x - camera.x) * width / camera.width,
+        anchor.y - (anchor.y - camera.y) * height / camera.height, width, height);
+}
+function fitCamera(state, key, viewport, anchor, previous) {
+    var scope = state.scopes[key], computed = layout(state, key), candidates = [];
+    if (previous) candidates.push(copy(previous));
+    visit(scope.root, function(node, parent) {
+        if (!computed.nodes[node.id] || (parent && parent.kind === "tabs")) return;
+        candidates.push({ node: node.id });
+        if (node.kind === "desktop") node.windows.forEach(function(id) {
+            if (active(state, id)) candidates.push({ window: id });
+        });
+    });
+    var best = { node: scope.root.id }, score = Infinity;
+    candidates.forEach(function(candidate) {
+        var box = cameraRect(state, key, computed, candidate);
+        var dx = (box.x + box.width / 2 - viewport.x - viewport.width / 2) / viewport.width;
+        var dy = (box.y + box.height / 2 - viewport.y - viewport.height / 2) / viewport.height;
+        var distance = Math.abs(Math.log(box.width / viewport.width))
+            + Math.abs(Math.log(box.height / viewport.height)) + 2 * (dx * dx + dy * dy);
+        if (!contains(box, anchor.x, anchor.y)) distance += 4;
+        if (distance < score - 1e-9) { best = candidate; score = distance; }
+    });
+    return copy(best);
 }
 function navigate(state, key, camera, remember) {
     var scope = state.scopes[key];
